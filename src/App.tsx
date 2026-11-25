@@ -11,7 +11,7 @@ import {
 } from './db/journalDb';
 import { VelaJournalHost, type ActiveTool } from './chart/velaHost';
 import type { DraftPosition } from './chart/journalLayer';
-import { TopBar } from './components/TopBar';
+import { TopBar, type RightTabId } from './components/TopBar';
 import { ReplayBar } from './components/ReplayBar';
 import { TradesTab, type TradeFormSeed } from './components/TradesTab';
 import { NotesTab, type NoteFormSeed } from './components/NotesTab';
@@ -20,8 +20,6 @@ import { StrategiesTab } from './components/StrategiesTab';
 import { BacktestTab } from './components/BacktestTab';
 import { DataTab } from './components/DataTab';
 import { SYMBOL_MAP } from './config/symbols';
-
-type RightTabId = 'trades' | 'notes' | 'consistency' | 'strategies' | 'backtest' | 'data';
 
 const DEFAULT_REPLAY: ReplayState = {
   active: false,
@@ -256,6 +254,7 @@ export function App() {
         lastPrice={lastPrice}
         replayActive={replayBarOpen || replay.active}
         panelOpen={panelOpen}
+        activeTab={activeTab}
         isApproxGap={isApproxGap}
         onSelectSymbol={handleSelectSymbol}
         onSelectTimeframe={handleSelectTimeframe}
@@ -263,6 +262,10 @@ export function App() {
         onToggleReplay={handleToggleReplay}
         onOpenBacktest={() => {
           setActiveTab('backtest');
+          setPanelOpen(true);
+        }}
+        onSelectTab={(tab) => {
+          setActiveTab(tab);
           setPanelOpen(true);
         }}
         onTogglePanel={() => setPanelOpen((v) => !v)}
@@ -381,28 +384,6 @@ export function App() {
         {/* Right tabbed panel */}
         {panelOpen && (
           <aside class="right-panel" data-testid="right-panel">
-            <div class="tabs-header">
-              {(
-                [
-                  ['trades', 'Lệnh'],
-                  ['notes', 'Ghi chú'],
-                  ['consistency', 'Độ nhất quán'],
-                  ['strategies', 'Trường phái'],
-                  ['backtest', 'Backtest'],
-                  ['data', 'Dữ liệu'],
-                ] as const
-              ).map(([id, label]) => (
-                <button
-                  key={id}
-                  data-testid={`tab-${id}`}
-                  class={`tab-btn ${activeTab === id ? 'active' : ''}`}
-                  onClick={() => setActiveTab(id)}
-                >
-                  {label}
-                </button>
-              ))}
-            </div>
-
             <div class="tab-body">
               {activeTab === 'trades' && (
                 <TradesTab

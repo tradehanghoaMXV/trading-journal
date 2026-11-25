@@ -11,6 +11,17 @@ import {
 } from 'lucide-preact';
 import { ALL_SYMBOLS, TIMEFRAMES, formatPrice } from '../config/symbols';
 
+export type RightTabId = 'trades' | 'notes' | 'consistency' | 'strategies' | 'backtest' | 'data';
+
+const RIGHT_TABS: readonly { id: RightTabId; label: string }[] = [
+  { id: 'trades', label: 'Lệnh' },
+  { id: 'notes', label: 'Ghi chú' },
+  { id: 'consistency', label: 'Độ nhất quán' },
+  { id: 'strategies', label: 'Trường phái' },
+  { id: 'backtest', label: 'Backtest' },
+  { id: 'data', label: 'Dữ liệu' },
+];
+
 interface TopBarProps {
   symbol: string;
   timeframe: string;
@@ -18,12 +29,14 @@ interface TopBarProps {
   lastPrice: number | null;
   replayActive: boolean;
   panelOpen: boolean;
+  activeTab: RightTabId;
   isApproxGap: boolean;
   onSelectSymbol: (sym: string) => void;
   onSelectTimeframe: (tf: string) => void;
   onSelectLayout: (layout: '1' | '2h' | '4') => void;
   onToggleReplay: () => void;
   onOpenBacktest: () => void;
+  onSelectTab: (tab: RightTabId) => void;
   onTogglePanel: () => void;
 }
 
@@ -39,7 +52,8 @@ export function TopBar(props: TopBarProps) {
 
   return (
     <header class="topbar">
-      <div class="topbar-group">
+      {/* Left zone: Brand + Symbol + Timeframes + Live price */}
+      <div class="topbar-group topbar-left">
         <span class="brand-title">NHẬT KÝ GIAO DỊCH</span>
 
         <div style={{ position: 'relative' }}>
@@ -48,7 +62,7 @@ export function TopBar(props: TopBarProps) {
             data-testid="symbol-picker-btn"
             onClick={() => setSearchOpen((v) => !v)}
           >
-            <Search size={14} />
+            <Search size={13} />
             <strong>{props.symbol}</strong>
           </button>
 
@@ -108,8 +122,7 @@ export function TopBar(props: TopBarProps) {
             <button
               key={tf.id}
               data-testid={`tf-btn-${tf.id}`}
-              class={`btn ${props.timeframe === tf.id ? 'btn-active' : ''}`}
-              style={{ padding: '4px 8px' }}
+              class={`btn topbar-tf-btn ${props.timeframe === tf.id ? 'btn-active' : ''}`}
               onClick={() => props.onSelectTimeframe(tf.id)}
             >
               {tf.label}
@@ -122,21 +135,21 @@ export function TopBar(props: TopBarProps) {
           <div
             data-testid="live-price-badge"
             class="pill pill-bull"
-            style={{ fontFamily: 'Montserrat, monospace', fontSize: '12px', padding: '3px 9px' }}
+            style={{ fontFamily: 'Montserrat, monospace', fontSize: '11.5px', padding: '3px 8px', whiteSpace: 'nowrap' }}
           >
             {formatPrice(props.lastPrice, props.symbol)}
           </div>
         )}
 
         {props.isApproxGap && (
-          <span class="pill pill-accent" title="Khoảng trống gần nhất được nội suy từ Pyth Hermes">
+          <span class="pill pill-accent" style={{ whiteSpace: 'nowrap' }} title="Khoảng trống gần nhất được nội suy từ Pyth Hermes">
             Pyth xấp xỉ
           </span>
         )}
       </div>
 
-      <div class="topbar-group">
-        {/* Layout 1 / 2 / 4 */}
+      {/* Center zone: Layout 1/2/4 + Replay + Backtest */}
+      <div class="topbar-group topbar-center" data-testid="topbar-center">
         <div class="topbar-group" style={{ gap: '3px' }}>
           <button
             class={`btn ${props.layout === '1' ? 'btn-active' : ''}`}
@@ -166,7 +179,7 @@ export function TopBar(props: TopBarProps) {
           class={`btn ${props.replayActive ? 'btn-active' : ''}`}
           onClick={props.onToggleReplay}
         >
-          <PlayCircle size={14} /> Replay
+          <PlayCircle size={13} /> Replay
         </button>
 
         <button
@@ -174,11 +187,28 @@ export function TopBar(props: TopBarProps) {
           class="btn"
           onClick={props.onOpenBacktest}
         >
-          <Activity size={14} /> Backtest
+          <Activity size={13} /> Backtest
         </button>
+      </div>
+
+      {/* Right zone: Navigation tabs + Panel collapse/expand */}
+      <div class="topbar-group topbar-right" data-testid="topbar-right">
+        <nav class="topbar-tabs" aria-label="Bảng điều khiển bên phải">
+          {RIGHT_TABS.map((tab) => (
+            <button
+              key={tab.id}
+              data-testid={`tab-${tab.id}`}
+              class={`topbar-tab ${props.panelOpen && props.activeTab === tab.id ? 'active' : ''}`}
+              onClick={() => props.onSelectTab(tab.id)}
+            >
+              {tab.label}
+            </button>
+          ))}
+        </nav>
 
         <button
           class="btn"
+          data-testid="panel-toggle-btn"
           title={props.panelOpen ? 'Ẩn panel phải' : 'Hiện panel phải'}
           onClick={props.onTogglePanel}
         >

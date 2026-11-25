@@ -1,0 +1,3 @@
+minimumReleaseAgeExclude:
+  - '@luxalgo/vela-ui@0.4.5'
+  - '@luxalgo/vela@0.10.19'

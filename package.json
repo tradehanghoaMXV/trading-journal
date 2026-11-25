@@ -1,0 +1,24 @@
+{
+  "name": "trading-journal",
+  "private": true,
+  "version": "1.0.0",
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "tsc --noEmit && vite build",
+    "preview": "vite preview",
+    "fetch-dukascopy": "node scripts/fetch-dukascopy.mjs"
+  },
+  "dependencies": {
+    "@luxalgo/vela": "0.10.19",
+    "dexie": "^4.4.7",
+    "lucide-preact": "^1.78.0",
+    "preact": "^11.2.0"
+  },
+  "devDependencies": {
+    "@preact/preset-vite": "^2.10.6",
+    "dukascopy-node": "1.51.1",
+    "typescript": "^7.0.2",
+    "vite": "^8.3.8"
+  }
+}

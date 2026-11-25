@@ -313,9 +313,9 @@ export function BacktestTab(props: BacktestTabProps) {
                   </strong>{' '}
                   {new Date(t.entryTime).toLocaleDateString('vi-VN')}
                 </span>
-                <span style={{ color: t.rMultiple >= 0 ? '#00F59B' : '#FF3B5C', fontWeight: 600 }}>
-                  {t.rMultiple >= 0 ? '+' : ''}
-                  {t.rMultiple}R
+                <span style={{ color: (t.rMultiple ?? 0) >= 0 ? '#00F59B' : '#FF3B5C', fontWeight: 600 }}>
+                  {(t.rMultiple ?? 0) >= 0 ? '+' : ''}
+                  {t.rMultiple ?? 0}R
                 </span>
               </div>
             ))}

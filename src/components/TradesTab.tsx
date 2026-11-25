@@ -12,6 +12,8 @@ import {
 } from 'lucide-preact';
 import {
   computeRMultiple,
+  getTradeAfterNotes,
+  getTradeBeforeNotes,
   type Strategy,
   type Trade,
   type TradeMode,
@@ -26,9 +28,9 @@ export interface TradeFormSeed {
   symbol: string;
   timeframe: string;
   entryTime: number;
-  entryPrice: number;
-  stopLoss: number;
-  takeProfit: number;
+  entryPrice?: number;
+  stopLoss?: number;
+  takeProfit?: number;
 }
 
 interface TradesTabProps {
@@ -57,6 +59,49 @@ const MISTAKE_OPTIONS = [
   'FOMO đuổi giá',
   'Bỏ qua checklist',
 ];
+
+function parseOptNumber(raw: string): number | undefined {
+  const trimmed = raw.trim();
+  if (!trimmed) return undefined;
+  const n = Number(trimmed);
+  return Number.isFinite(n) ? n : undefined;
+}
+
+function formatTradePrices(
+  t: Pick<Trade, 'entryPrice' | 'stopLoss' | 'takeProfit' | 'symbol'>
+): string {
+  const parts: string[] = [];
+  if (t.entryPrice !== undefined && Number.isFinite(t.entryPrice)) {
+    parts.push(`Vào: ${formatPrice(t.entryPrice, t.symbol)}`);
+  }
+  if (t.stopLoss !== undefined && Number.isFinite(t.stopLoss)) {
+    parts.push(`SL: ${formatPrice(t.stopLoss, t.symbol)}`);
+  }
+  if (t.takeProfit !== undefined && Number.isFinite(t.takeProfit)) {
+    parts.push(`TP: ${formatPrice(t.takeProfit, t.symbol)}`);
+  }
+  return parts.join(' · ');
+}
+
+function formatRBadge(t: Trade): string | null {
+  if (typeof t.rMultiple !== 'number' || !Number.isFinite(t.rMultiple)) {
+    return null;
+  }
+  if (t.status === 'closed') {
+    return `${t.rMultiple >= 0 ? '+' : ''}${t.rMultiple}R`;
+  }
+  if (
+    t.entryPrice !== undefined &&
+    t.stopLoss !== undefined &&
+    t.takeProfit !== undefined &&
+    Number.isFinite(t.entryPrice) &&
+    Number.isFinite(t.stopLoss) &&
+    Number.isFinite(t.takeProfit)
+  ) {
+    return `Mục tiêu ${t.rMultiple}R`;
+  }
+  return null;
+}
 
 function formatShortTime(ts?: number): string {
   if (!ts) return '';
@@ -117,7 +162,8 @@ export function TradesTab(props: TradesTabProps) {
   );
   const [emotion, setEmotion] = useState<string>('Kỷ luật');
   const [mistakes, setMistakes] = useState<string[]>([]);
-  const [notes, setNotes] = useState<string>('');
+  const [beforeNotes, setBeforeNotes] = useState<string>('');
+  const [afterNotes, setAfterNotes] = useState<string>('');
   const [beforeImage, setBeforeImage] = useState<string | undefined>(undefined);
   const [afterImage, setAfterImage] = useState<string | undefined>(undefined);
   const [beforeCapturedAt, setBeforeCapturedAt] = useState<number | undefined>(undefined);
@@ -130,11 +176,14 @@ export function TradesTab(props: TradesTabProps) {
   const [showAllSymbols, setShowAllSymbols] = useState(false);
   const [sortOrder, setSortOrder] = useState<'desc' | 'asc'>('desc');
   const [timeFilter, setTimeFilter] = useState<TimeFilter>('all');
+  const [dateFrom, setDateFrom] = useState<string>('');
+  const [dateTo, setDateTo] = useState<string>('');
 
   const [viewerTrade, setViewerTrade] = useState<Trade | null>(null);
   const [viewerMode, setViewerMode] = useState<ModalViewMode>('both');
   const [viewerIsSaved, setViewerIsSaved] = useState<boolean>(true);
-  const [modalNotes, setModalNotes] = useState<string>('');
+  const [modalBeforeNotes, setModalBeforeNotes] = useState<string>('');
+  const [modalAfterNotes, setModalAfterNotes] = useState<string>('');
   const [savingModalNotes, setSavingModalNotes] = useState<boolean>(false);
 
   const activeStrat =
@@ -154,9 +203,9 @@ export function TradesTab(props: TradesTabProps) {
       setSide(props.seed.side);
       setMode(props.seed.mode);
       setEntryTime(props.seed.entryTime);
-      setEntryPrice(String(props.seed.entryPrice));
-      setStopLoss(String(props.seed.stopLoss));
-      setTakeProfit(String(props.seed.takeProfit));
+      setEntryPrice(props.seed.entryPrice !== undefined ? String(props.seed.entryPrice) : '');
+      setStopLoss(props.seed.stopLoss !== undefined ? String(props.seed.stopLoss) : '');
+      setTakeProfit(props.seed.takeProfit !== undefined ? String(props.seed.takeProfit) : '');
       setExitPrice('');
       setStatus('open');
     }
@@ -171,17 +220,25 @@ export function TradesTab(props: TradesTabProps) {
     return () => window.removeEventListener('keydown', onKey);
   }, [viewerTrade]);
 
+  const getFormattedLastPrice = (): string => {
+    if (props.lastPrice !== null && Number.isFinite(props.lastPrice)) {
+      return formatPrice(props.lastPrice, props.symbol);
+    }
+    return '';
+  };
+
   const openViewer = (trade: Trade, initialMode: ModalViewMode, isSaved = true) => {
     setViewerTrade(trade);
     setViewerMode(initialMode);
     setViewerIsSaved(isSaved);
-    setModalNotes(trade.notes || '');
+    setModalBeforeNotes(getTradeBeforeNotes(trade));
+    setModalAfterNotes(getTradeAfterNotes(trade));
   };
 
   const openFormPreviewViewer = (initialMode: 'before' | 'after') => {
-    const ep = Number(entryPrice) || 0;
-    const sl = Number(stopLoss) || 0;
-    const tp = Number(takeProfit) || 0;
+    const ep = parseOptNumber(entryPrice);
+    const sl = parseOptNumber(stopLoss);
+    const tp = parseOptNumber(takeProfit);
     const previewTrade: Trade = {
       id: editingId ?? 'preview',
       mode,
@@ -196,7 +253,9 @@ export function TradesTab(props: TradesTabProps) {
       checklist,
       emotion,
       mistakes,
-      notes,
+      notes: beforeNotes,
+      beforeNotes,
+      afterNotes,
       rMultiple: computeRMultiple(side, ep, sl, undefined, tp),
       status,
       createdAt: entryTime,
@@ -212,11 +271,17 @@ export function TradesTab(props: TradesTabProps) {
     if (!viewerTrade || !viewerIsSaved) return;
     setSavingModalNotes(true);
     try {
-      const updated: Trade = { ...viewerTrade, notes: modalNotes };
+      const updated: Trade = {
+        ...viewerTrade,
+        beforeNotes: modalBeforeNotes,
+        afterNotes: modalAfterNotes,
+        notes: modalBeforeNotes,
+      };
       await props.onSaveTrade(updated);
       setViewerTrade(updated);
       if (editingId === updated.id) {
-        setNotes(modalNotes);
+        setBeforeNotes(modalBeforeNotes);
+        setAfterNotes(modalAfterNotes);
       }
     } finally {
       setSavingModalNotes(false);
@@ -229,16 +294,17 @@ export function TradesTab(props: TradesTabProps) {
     setSide(t.side);
     setMode(t.mode);
     setEntryTime(t.entryTime);
-    setEntryPrice(String(t.entryPrice));
-    setStopLoss(String(t.stopLoss));
-    setTakeProfit(String(t.takeProfit));
+    setEntryPrice(t.entryPrice !== undefined ? String(t.entryPrice) : '');
+    setStopLoss(t.stopLoss !== undefined ? String(t.stopLoss) : '');
+    setTakeProfit(t.takeProfit !== undefined ? String(t.takeProfit) : '');
     setExitPrice(t.exitPrice != null ? String(t.exitPrice) : '');
     setStatus(t.status);
     setStrategyId(t.strategyId);
     setChecklist(t.checklist);
     setEmotion(t.emotion || 'Kỷ luật');
     setMistakes(t.mistakes || []);
-    setNotes(t.notes || '');
+    setBeforeNotes(getTradeBeforeNotes(t));
+    setAfterNotes(getTradeAfterNotes(t));
     setBeforeImage(t.beforeImage);
     setAfterImage(t.afterImage);
     setBeforeCapturedAt(t.beforeCapturedAt);
@@ -249,19 +315,19 @@ export function TradesTab(props: TradesTabProps) {
 
   const resetForm = () => {
     setEditingId(null);
-    const p = props.lastPrice ?? 0;
     setSide('long');
     setMode(props.replayActive ? 'replay' : 'live');
     setEntryTime(Date.now());
-    setEntryPrice(p ? String(p) : '');
-    setStopLoss(p ? String(Number((p * 0.99).toFixed(4))) : '');
-    setTakeProfit(p ? String(Number((p * 1.02).toFixed(4))) : '');
+    setEntryPrice('');
+    setStopLoss('');
+    setTakeProfit('');
     setExitPrice('');
     setStatus('open');
     setChecklist(activeStrat ? activeStrat.rules.map(() => false) : []);
     setEmotion('Kỷ luật');
     setMistakes([]);
-    setNotes('');
+    setBeforeNotes('');
+    setAfterNotes('');
     setBeforeImage(undefined);
     setAfterImage(undefined);
     setBeforeCapturedAt(undefined);
@@ -288,6 +354,10 @@ export function TradesTab(props: TradesTabProps) {
       }
       if (drawings) {
         setDrawingsSnapshot(drawings);
+      }
+      if (!entryPrice.trim()) {
+        const fp = getFormattedLastPrice();
+        if (fp) setEntryPrice(fp);
       }
     } finally {
       setCapturing(false);
@@ -320,21 +390,21 @@ export function TradesTab(props: TradesTabProps) {
       setAfterImage(img);
       setAfterCapturedAt(updated.afterCapturedAt);
     }
+    openViewer(updated, 'both', true);
   };
 
   const handleSubmit = async (e: Event) => {
     e.preventDefault();
-    const ep = Number(entryPrice);
-    const sl = Number(stopLoss);
-    const tp = Number(takeProfit);
-    const ex = exitPrice.trim() ? Number(exitPrice) : undefined;
-    if (!Number.isFinite(ep) || !Number.isFinite(sl) || !Number.isFinite(tp)) return;
+    let ep = parseOptNumber(entryPrice);
+    const sl = parseOptNumber(stopLoss);
+    const tp = parseOptNumber(takeProfit);
+    const ex = parseOptNumber(exitPrice);
 
     let finalBefore = beforeImage;
     let finalBeforeAt = beforeCapturedAt;
     let finalDrawings = drawingsSnapshot;
 
-    // Auto-capture beforeImage if user hasn't clicked "Chụp chart ngay" yet
+    // Auto-capture beforeImage & auto-fill Entry if user hasn't clicked "Chụp chart ngay" yet
     if (!finalBefore) {
       const captured = await props.onCaptureChart();
       if (captured) {
@@ -343,6 +413,12 @@ export function TradesTab(props: TradesTabProps) {
       }
       if (!finalDrawings) {
         finalDrawings = props.onGetDrawings() ?? undefined;
+      }
+      if (ep === undefined) {
+        const fp = getFormattedLastPrice();
+        if (fp) {
+          ep = Number(fp);
+        }
       }
     }
 
@@ -369,7 +445,9 @@ export function TradesTab(props: TradesTabProps) {
       checklist,
       emotion,
       mistakes,
-      notes,
+      notes: beforeNotes,
+      beforeNotes,
+      afterNotes,
       rMultiple: rMult,
       status: finalStatus,
       createdAt: existing?.createdAt ?? Date.now(),
@@ -385,11 +463,20 @@ export function TradesTab(props: TradesTabProps) {
 
   const nowTs = Date.now();
   const todayKey = getLocalDateKey(nowTs);
+  const hasCustomDate = Boolean(dateFrom || dateTo);
+
   const filteredTrades = props.trades
     .filter((t) => (showAllSymbols ? true : t.symbol === props.symbol))
     .filter((t) => {
-      if (timeFilter === 'all') return true;
       const ts = t.entryTime || t.createdAt;
+      if (hasCustomDate) {
+        const key = getLocalDateKey(ts);
+        if (dateFrom && dateTo) return key >= dateFrom && key <= dateTo;
+        if (dateFrom) return key === dateFrom;
+        if (dateTo) return key <= dateTo;
+        return true;
+      }
+      if (timeFilter === 'all') return true;
       if (timeFilter === 'today') return getLocalDateKey(ts) === todayKey;
       if (timeFilter === '7d') return ts >= nowTs - 7 * 86_400_000;
       if (timeFilter === '30d') return ts >= nowTs - 30 * 86_400_000;
@@ -417,11 +504,25 @@ export function TradesTab(props: TradesTabProps) {
     }
   }
 
+  const modalBeforeDirty =
+    viewerTrade !== null && modalBeforeNotes !== getTradeBeforeNotes(viewerTrade);
+  const modalAfterDirty =
+    viewerTrade !== null && modalAfterNotes !== getTradeAfterNotes(viewerTrade);
+  const modalNotesDirty = modalBeforeDirty || modalAfterDirty;
+
   return (
-    <div style={{ display: 'flex', flexDirection: 'column', gap: '10px' }}>
-      <form class="card" onSubmit={handleSubmit} data-testid="trade-form">
-        <div class="card-title" style={{ marginBottom: formCollapsed ? 0 : undefined }}>
-          <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
+    <div style={{ display: 'flex', flexDirection: 'column', gap: '8px', flex: 1, minHeight: 0 }}>
+      <form
+        class="card"
+        onSubmit={handleSubmit}
+        data-testid="trade-form"
+        style={{ padding: '8px', flexShrink: 0 }}
+      >
+        <div
+          class="card-title"
+          style={{ marginBottom: formCollapsed ? 0 : '6px', fontSize: '12px' }}
+        >
+          <div style={{ display: 'flex', alignItems: 'center', gap: '5px' }}>
             <button
               type="button"
               class="btn"
@@ -440,7 +541,7 @@ export function TradesTab(props: TradesTabProps) {
                 type="button"
                 data-testid="side-long-btn"
                 class={`btn ${side === 'long' ? 'btn-bull' : ''}`}
-                style={{ padding: '3px 8px' }}
+                style={{ padding: '2px 8px', fontSize: '11px' }}
                 onClick={() => setSide('long')}
               >
                 LONG
@@ -449,7 +550,7 @@ export function TradesTab(props: TradesTabProps) {
                 type="button"
                 data-testid="side-short-btn"
                 class={`btn ${side === 'short' ? 'btn-bear' : ''}`}
-                style={{ padding: '3px 8px' }}
+                style={{ padding: '2px 8px', fontSize: '11px' }}
                 onClick={() => setSide('short')}
               >
                 SHORT
@@ -460,756 +561,954 @@ export function TradesTab(props: TradesTabProps) {
 
         {!formCollapsed && (
           <>
-
-        {/* 1 compact row: Entry, SL, TP */}
-        <div class="grid-3" style={{ marginBottom: '8px' }}>
-          <div>
-            <label class="field-label">Giá vào</label>
-            <input
-              class="input"
-              data-testid="trade-entry-input"
-              style={{ width: '100%' }}
-              type="number"
-              step="any"
-              value={entryPrice}
-              onInput={(e) => setEntryPrice((e.target as HTMLInputElement).value)}
-              required
-            />
-          </div>
-          <div>
-            <label class="field-label">Stop Loss</label>
-            <input
-              class="input"
-              data-testid="trade-sl-input"
-              style={{ width: '100%' }}
-              type="number"
-              step="any"
-              value={stopLoss}
-              onInput={(e) => setStopLoss((e.target as HTMLInputElement).value)}
-              required
-            />
-          </div>
-          <div>
-            <label class="field-label">Take Profit</label>
-            <input
-              class="input"
-              data-testid="trade-tp-input"
-              style={{ width: '100%' }}
-              type="number"
-              step="any"
-              value={takeProfit}
-              onInput={(e) => setTakeProfit((e.target as HTMLInputElement).value)}
-              required
-            />
-          </div>
-        </div>
-
-        {/* Ghi chú lệnh */}
-        <div style={{ marginBottom: '8px' }}>
-          <label class="field-label">Ghi chú lệnh</label>
-          <textarea
-            class="textarea"
-            data-testid="trade-notes-input"
-            style={{ width: '100%', minHeight: '58px', resize: 'vertical' }}
-            placeholder="Lý do vào lệnh, bối cảnh thị trường..."
-            value={notes}
-            onInput={(e) => setNotes((e.target as HTMLTextAreaElement).value)}
-          />
-        </div>
-
-        {/* Ảnh chụp chart Trước & Sau */}
-        <div
-          style={{
-            marginBottom: '8px',
-            padding: '8px',
-            borderRadius: '6px',
-            background: '#0b0f17',
-            border: '1px solid #1e293b',
-          }}
-        >
-          <div
-            style={{
-              display: 'flex',
-              alignItems: 'center',
-              justifyContent: 'space-between',
-              marginBottom: '6px',
-              gap: '6px',
-            }}
-          >
-            <span style={{ fontSize: '11px', fontWeight: 600, color: '#cbd5e1' }}>
-              Ảnh chart Trước / Sau
-            </span>
-            <div style={{ display: 'flex', gap: '4px' }}>
-              <button
-                type="button"
-                class="btn"
-                data-testid="capture-before-btn"
-                disabled={capturing}
-                style={{ padding: '4px 8px', fontSize: '11px', borderColor: '#38bdf8', color: '#38bdf8' }}
-                onClick={handleCaptureBefore}
-              >
-                <Camera size={12} /> {capturing ? 'Đang chụp...' : 'Chụp chart ngay'}
-              </button>
-              {(editingId || beforeImage) && (
-                <button
-                  type="button"
-                  class="btn"
-                  data-testid="capture-after-btn"
-                  disabled={capturing}
-                  style={{ padding: '4px 8px', fontSize: '11px' }}
-                  onClick={handleCaptureAfterInForm}
-                >
-                  <Camera size={12} /> Ảnh Sau
-                </button>
-              )}
-            </div>
-          </div>
-
-          <div class="grid-2" style={{ gap: '6px' }}>
-            <div
-              style={{
-                borderRadius: '5px',
-                border: '1px solid #1e293b',
-                background: '#0f1623',
-                overflow: 'hidden',
-                minHeight: '64px',
-                display: 'flex',
-                flexDirection: 'column',
-              }}
-            >
-              <div
-                style={{
-                  display: 'flex',
-                  justifyContent: 'space-between',
-                  alignItems: 'center',
-                  padding: '2px 6px',
-                  fontSize: '10px',
-                  color: '#94a3b8',
-                  borderBottom: '1px solid #1e293b',
-                }}
-              >
-                <span>Trước {beforeCapturedAt ? `· ${formatShortTime(beforeCapturedAt)}` : ''}</span>
-                {beforeImage && (
-                  <button
-                    type="button"
-                    style={{
-                      background: 'none',
-                      border: 'none',
-                      color: '#94a3b8',
-                      cursor: 'pointer',
-                      padding: 0,
-                      display: 'flex',
-                    }}
-                    onClick={() => {
-                      setBeforeImage(undefined);
-                      setBeforeCapturedAt(undefined);
-                    }}
-                  >
-                    <X size={11} />
-                  </button>
-                )}
-              </div>
-              {beforeImage ? (
-                <img
-                  src={beforeImage}
-                  data-testid="form-before-preview"
-                  alt="Ảnh chart Trước"
-                  title="Bấm để phóng to ảnh Trước"
-                  onClick={() => openFormPreviewViewer('before')}
-                  style={{ width: '100%', height: '72px', objectFit: 'cover', display: 'block', cursor: 'pointer' }}
+            {/* 1 compact row: Entry (tự điền), SL, TP — all optional */}
+            <div class="grid-3" style={{ marginBottom: '6px', gap: '5px' }}>
+              <div>
+                <label class="field-label" style={{ fontSize: '10px', marginBottom: '2px' }}>
+                  Entry (tự điền)
+                </label>
+                <input
+                  class="input input-compact"
+                  data-testid="trade-entry-input"
+                  style={{ width: '100%' }}
+                  type="number"
+                  step="any"
+                  placeholder="Tự điền khi chụp"
+                  value={entryPrice}
+                  onInput={(e) => setEntryPrice((e.target as HTMLInputElement).value)}
                 />
-              ) : (
-                <div
-                  style={{
-                    flex: 1,
-                    display: 'flex',
-                    alignItems: 'center',
-                    justifyContent: 'center',
-                    fontSize: '10.5px',
-                    color: '#64748b',
-                    padding: '6px',
-                    textAlign: 'center',
-                  }}
-                >
-                  Tự chụp khi lưu lệnh
-                </div>
-              )}
-            </div>
-
-            <div
-              style={{
-                borderRadius: '5px',
-                border: '1px solid #1e293b',
-                background: '#0f1623',
-                overflow: 'hidden',
-                minHeight: '64px',
-                display: 'flex',
-                flexDirection: 'column',
-              }}
-            >
-              <div
-                style={{
-                  display: 'flex',
-                  justifyContent: 'space-between',
-                  alignItems: 'center',
-                  padding: '2px 6px',
-                  fontSize: '10px',
-                  color: '#94a3b8',
-                  borderBottom: '1px solid #1e293b',
-                }}
-              >
-                <span>Sau {afterCapturedAt ? `· ${formatShortTime(afterCapturedAt)}` : ''}</span>
-                {afterImage && (
-                  <button
-                    type="button"
-                    style={{
-                      background: 'none',
-                      border: 'none',
-                      color: '#94a3b8',
-                      cursor: 'pointer',
-                      padding: 0,
-                      display: 'flex',
-                    }}
-                    onClick={() => {
-                      setAfterImage(undefined);
-                      setAfterCapturedAt(undefined);
-                    }}
-                  >
-                    <X size={11} />
-                  </button>
-                )}
               </div>
-              {afterImage ? (
-                <img
-                  src={afterImage}
-                  data-testid="form-after-preview"
-                  alt="Ảnh chart Sau"
-                  title="Bấm để phóng to ảnh Sau"
-                  onClick={() => openFormPreviewViewer('after')}
-                  style={{ width: '100%', height: '72px', objectFit: 'cover', display: 'block', cursor: 'pointer' }}
+              <div>
+                <label class="field-label" style={{ fontSize: '10px', marginBottom: '2px' }}>
+                  SL (tùy chọn)
+                </label>
+                <input
+                  class="input input-compact"
+                  data-testid="trade-sl-input"
+                  style={{ width: '100%' }}
+                  type="number"
+                  step="any"
+                  placeholder="Tùy chọn"
+                  value={stopLoss}
+                  onInput={(e) => setStopLoss((e.target as HTMLInputElement).value)}
                 />
-              ) : (
-                <div
-                  style={{
-                    flex: 1,
-                    display: 'flex',
-                    alignItems: 'center',
-                    justifyContent: 'center',
-                    fontSize: '10.5px',
-                    color: '#64748b',
-                    padding: '6px',
-                    textAlign: 'center',
-                  }}
-                >
-                  Cập nhật sau khi đóng
-                </div>
-              )}
+              </div>
+              <div>
+                <label class="field-label" style={{ fontSize: '10px', marginBottom: '2px' }}>
+                  TP (tùy chọn)
+                </label>
+                <input
+                  class="input input-compact"
+                  data-testid="trade-tp-input"
+                  style={{ width: '100%' }}
+                  type="number"
+                  step="any"
+                  placeholder="Tùy chọn"
+                  value={takeProfit}
+                  onInput={(e) => setTakeProfit((e.target as HTMLInputElement).value)}
+                />
+              </div>
             </div>
-          </div>
-        </div>
 
-        {/* Collapsible: Kỷ luật & Nâng cao (collapsed by default) */}
-        <div style={{ marginBottom: '8px' }}>
-          <button
-            type="button"
-            data-testid="toggle-advanced-btn"
-            class="btn"
-            style={{
-              width: '100%',
-              justifyContent: 'space-between',
-              padding: '5px 8px',
-              fontSize: '11.5px',
-              background: '#0b0f17',
-              color: '#cbd5e1',
-            }}
-            onClick={() => setAdvancedOpen((v) => !v)}
-          >
-            <span>Kỷ luật & Nâng cao</span>
-            {advancedOpen ? <ChevronDown size={14} /> : <ChevronRight size={14} />}
-          </button>
+            {/* Ghi chú Trước (lúc vào) */}
+            <div style={{ marginBottom: '6px' }}>
+              <label class="field-label" style={{ fontSize: '10px', marginBottom: '2px' }}>
+                Ghi chú Trước (lúc vào)
+              </label>
+              <textarea
+                class="textarea"
+                data-testid="trade-before-notes-input"
+                rows={2}
+                style={{
+                  width: '100%',
+                  minHeight: '42px',
+                  padding: '4px 6px',
+                  fontSize: '11.5px',
+                  resize: 'vertical',
+                }}
+                placeholder="Lý do vào lệnh, bối cảnh thị trường..."
+                value={beforeNotes}
+                onInput={(e) => setBeforeNotes((e.target as HTMLTextAreaElement).value)}
+              />
+            </div>
 
-          {advancedOpen && (
+            {/* Ghi chú Sau (kết quả) — shown when After image is captured or editing */}
+            {(afterImage || editingId) && (
+              <div style={{ marginBottom: '6px' }}>
+                <label
+                  class="field-label"
+                  style={{ fontSize: '10px', marginBottom: '2px', color: '#00F59B' }}
+                >
+                  Ghi chú Sau (kết quả)
+                </label>
+                <textarea
+                  class="textarea"
+                  data-testid="trade-after-notes-input"
+                  rows={2}
+                  style={{
+                    width: '100%',
+                    minHeight: '42px',
+                    padding: '4px 6px',
+                    fontSize: '11.5px',
+                    resize: 'vertical',
+                  }}
+                  placeholder="Diễn biến thực tế, bài học sau lệnh..."
+                  value={afterNotes}
+                  onInput={(e) => setAfterNotes((e.target as HTMLTextAreaElement).value)}
+                />
+              </div>
+            )}
+
+            {/* Compact Before/After thumbnail preview strip + inline Capture & Save */}
             <div
-              data-testid="advanced-section"
               style={{
-                marginTop: '6px',
-                padding: '8px',
+                marginBottom: '6px',
+                padding: '6px',
                 borderRadius: '6px',
                 background: '#0b0f17',
                 border: '1px solid #1e293b',
-                display: 'flex',
-                flexDirection: 'column',
-                gap: '8px',
               }}
             >
-              <div class="grid-2">
-                <div>
-                  <label class="field-label">Trường phái</label>
-                  <select
-                    class="select"
-                    style={{ width: '100%' }}
-                    value={strategyId}
-                    onChange={(e) => handleStrategyChange((e.target as HTMLSelectElement).value)}
+              <div class="grid-2" style={{ gap: '5px', marginBottom: '6px' }}>
+                <div
+                  style={{
+                    borderRadius: '4px',
+                    border: '1px solid #1e293b',
+                    background: '#0f1623',
+                    overflow: 'hidden',
+                    display: 'flex',
+                    flexDirection: 'column',
+                  }}
+                >
+                  <div
+                    style={{
+                      display: 'flex',
+                      justifyContent: 'space-between',
+                      alignItems: 'center',
+                      padding: '1px 5px',
+                      fontSize: '9.5px',
+                      color: '#38bdf8',
+                      borderBottom: '1px solid #1e293b',
+                    }}
                   >
-                    {props.strategies.map((s) => (
-                      <option key={s.id} value={s.id}>
-                        {s.name}
-                      </option>
-                    ))}
-                  </select>
+                    <span>Trước {beforeCapturedAt ? `· ${formatShortTime(beforeCapturedAt)}` : ''}</span>
+                    {beforeImage && (
+                      <button
+                        type="button"
+                        style={{
+                          background: 'none',
+                          border: 'none',
+                          color: '#94a3b8',
+                          cursor: 'pointer',
+                          padding: 0,
+                          display: 'flex',
+                        }}
+                        onClick={() => {
+                          setBeforeImage(undefined);
+                          setBeforeCapturedAt(undefined);
+                        }}
+                      >
+                        <X size={10} />
+                      </button>
+                    )}
+                  </div>
+                  {beforeImage ? (
+                    <img
+                      src={beforeImage}
+                      data-testid="form-before-preview"
+                      alt="Ảnh chart Trước"
+                      title="Bấm để phóng to ảnh Trước"
+                      onClick={() => openFormPreviewViewer('before')}
+                      style={{
+                        width: '100%',
+                        height: '52px',
+                        objectFit: 'cover',
+                        display: 'block',
+                        cursor: 'pointer',
+                      }}
+                    />
+                  ) : (
+                    <div
+                      style={{
+                        height: '52px',
+                        display: 'flex',
+                        alignItems: 'center',
+                        justifyContent: 'center',
+                        fontSize: '10px',
+                        color: '#64748b',
+                        padding: '4px',
+                        textAlign: 'center',
+                      }}
+                    >
+                      Tự chụp khi lưu
+                    </div>
+                  )}
                 </div>
-                <div>
-                  <label class="field-label">Cảm xúc</label>
-                  <select
-                    class="select"
-                    style={{ width: '100%' }}
-                    value={emotion}
-                    onChange={(e) => setEmotion((e.target as HTMLSelectElement).value)}
+
+                <div
+                  style={{
+                    borderRadius: '4px',
+                    border: '1px solid #1e293b',
+                    background: '#0f1623',
+                    overflow: 'hidden',
+                    display: 'flex',
+                    flexDirection: 'column',
+                  }}
+                >
+                  <div
+                    style={{
+                      display: 'flex',
+                      justifyContent: 'space-between',
+                      alignItems: 'center',
+                      padding: '1px 5px',
+                      fontSize: '9.5px',
+                      color: '#00F59B',
+                      borderBottom: '1px solid #1e293b',
+                    }}
                   >
-                    {EMOTIONS.map((em) => (
-                      <option key={em} value={em}>
-                        {em}
-                      </option>
-                    ))}
-                  </select>
+                    <span>Sau {afterCapturedAt ? `· ${formatShortTime(afterCapturedAt)}` : ''}</span>
+                    {afterImage && (
+                      <button
+                        type="button"
+                        style={{
+                          background: 'none',
+                          border: 'none',
+                          color: '#94a3b8',
+                          cursor: 'pointer',
+                          padding: 0,
+                          display: 'flex',
+                        }}
+                        onClick={() => {
+                          setAfterImage(undefined);
+                          setAfterCapturedAt(undefined);
+                        }}
+                      >
+                        <X size={10} />
+                      </button>
+                    )}
+                  </div>
+                  {afterImage ? (
+                    <img
+                      src={afterImage}
+                      data-testid="form-after-preview"
+                      alt="Ảnh chart Sau"
+                      title="Bấm để phóng to ảnh Sau"
+                      onClick={() => openFormPreviewViewer('after')}
+                      style={{
+                        width: '100%',
+                        height: '52px',
+                        objectFit: 'cover',
+                        display: 'block',
+                        cursor: 'pointer',
+                      }}
+                    />
+                  ) : (
+                    <div
+                      style={{
+                        height: '52px',
+                        display: 'flex',
+                        alignItems: 'center',
+                        justifyContent: 'center',
+                        fontSize: '10px',
+                        color: '#64748b',
+                        padding: '4px',
+                        textAlign: 'center',
+                      }}
+                    >
+                      Cập nhật sau
+                    </div>
+                  )}
                 </div>
               </div>
 
-              {activeStrat && activeStrat.rules.length > 0 && (
-                <div>
-                  <label class="field-label">
-                    Checklist quy tắc ({checklist.filter(Boolean).length}/{activeStrat.rules.length})
-                  </label>
-                  <div style={{ display: 'flex', flexDirection: 'column', gap: '4px' }}>
-                    {activeStrat.rules.map((rule, idx) => (
-                      <label
-                        key={idx}
-                        style={{
-                          display: 'flex',
-                          alignItems: 'center',
-                          gap: '6px',
-                          fontSize: '11.5px',
-                          cursor: 'pointer',
-                        }}
+              <div style={{ display: 'flex', gap: '5px', alignItems: 'center' }}>
+                <button
+                  type="button"
+                  class="btn"
+                  data-testid="capture-before-btn"
+                  disabled={capturing}
+                  style={{
+                    padding: '4px 8px',
+                    fontSize: '11px',
+                    borderColor: '#38bdf8',
+                    color: '#38bdf8',
+                  }}
+                  onClick={handleCaptureBefore}
+                >
+                  <Camera size={12} /> {capturing ? 'Đang chụp...' : 'Chụp chart ngay'}
+                </button>
+                {(editingId || beforeImage) && (
+                  <button
+                    type="button"
+                    class="btn"
+                    data-testid="capture-after-btn"
+                    disabled={capturing}
+                    style={{ padding: '4px 7px', fontSize: '11px' }}
+                    onClick={handleCaptureAfterInForm}
+                  >
+                    <Camera size={12} /> Ảnh Sau
+                  </button>
+                )}
+                <button
+                  type="submit"
+                  class="btn btn-primary"
+                  style={{ flex: 1, justifyContent: 'center', padding: '4px 8px', fontSize: '11.5px' }}
+                  data-testid="save-trade-btn"
+                >
+                  <Plus size={13} /> {editingId ? 'Cập nhật' : 'Lưu lệnh'}
+                </button>
+                {editingId && (
+                  <button
+                    type="button"
+                    class="btn"
+                    style={{ padding: '4px 7px', fontSize: '11px' }}
+                    onClick={resetForm}
+                  >
+                    Hủy
+                  </button>
+                )}
+              </div>
+            </div>
+
+            {/* Collapsible: Kỷ luật & Nâng cao (collapsed by default) */}
+            <div>
+              <button
+                type="button"
+                data-testid="toggle-advanced-btn"
+                class="btn"
+                style={{
+                  width: '100%',
+                  justifyContent: 'space-between',
+                  padding: '4px 8px',
+                  fontSize: '11px',
+                  background: '#0b0f17',
+                  color: '#cbd5e1',
+                }}
+                onClick={() => setAdvancedOpen((v) => !v)}
+              >
+                <span>Kỷ luật & Nâng cao</span>
+                {advancedOpen ? <ChevronDown size={13} /> : <ChevronRight size={13} />}
+              </button>
+
+              {advancedOpen && (
+                <div
+                  data-testid="advanced-section"
+                  style={{
+                    marginTop: '6px',
+                    padding: '7px',
+                    borderRadius: '6px',
+                    background: '#0b0f17',
+                    border: '1px solid #1e293b',
+                    display: 'flex',
+                    flexDirection: 'column',
+                    gap: '6px',
+                  }}
+                >
+                  <div class="grid-2">
+                    <div>
+                      <label class="field-label">Trường phái</label>
+                      <select
+                        class="select input-compact"
+                        style={{ width: '100%' }}
+                        value={strategyId}
+                        onChange={(e) => handleStrategyChange((e.target as HTMLSelectElement).value)}
                       >
-                        <input
-                          type="checkbox"
-                          checked={Boolean(checklist[idx])}
-                          onChange={(e) => {
-                            const next = [...checklist];
-                            next[idx] = (e.target as HTMLInputElement).checked;
-                            setChecklist(next);
-                          }}
-                        />
-                        <span>{rule}</span>
+                        {props.strategies.map((s) => (
+                          <option key={s.id} value={s.id}>
+                            {s.name}
+                          </option>
+                        ))}
+                      </select>
+                    </div>
+                    <div>
+                      <label class="field-label">Cảm xúc</label>
+                      <select
+                        class="select input-compact"
+                        style={{ width: '100%' }}
+                        value={emotion}
+                        onChange={(e) => setEmotion((e.target as HTMLSelectElement).value)}
+                      >
+                        {EMOTIONS.map((em) => (
+                          <option key={em} value={em}>
+                            {em}
+                          </option>
+                        ))}
+                      </select>
+                    </div>
+                  </div>
+
+                  {activeStrat && activeStrat.rules.length > 0 && (
+                    <div>
+                      <label class="field-label">
+                        Checklist quy tắc ({checklist.filter(Boolean).length}/{activeStrat.rules.length})
                       </label>
-                    ))}
+                      <div style={{ display: 'flex', flexDirection: 'column', gap: '3px' }}>
+                        {activeStrat.rules.map((rule, idx) => (
+                          <label
+                            key={idx}
+                            style={{
+                              display: 'flex',
+                              alignItems: 'center',
+                              gap: '6px',
+                              fontSize: '11px',
+                              cursor: 'pointer',
+                            }}
+                          >
+                            <input
+                              type="checkbox"
+                              checked={Boolean(checklist[idx])}
+                              onChange={(e) => {
+                                const next = [...checklist];
+                                next[idx] = (e.target as HTMLInputElement).checked;
+                                setChecklist(next);
+                              }}
+                            />
+                            <span>{rule}</span>
+                          </label>
+                        ))}
+                      </div>
+                    </div>
+                  )}
+
+                  <div>
+                    <label class="field-label">Lỗi mắc phải (nếu có)</label>
+                    <div style={{ display: 'flex', flexWrap: 'wrap', gap: '4px' }}>
+                      {MISTAKE_OPTIONS.map((m) => {
+                        const active = mistakes.includes(m);
+                        return (
+                          <button
+                            type="button"
+                            key={m}
+                            class={`btn ${active ? 'btn-bear' : ''}`}
+                            style={{ padding: '2px 6px', fontSize: '10px' }}
+                            onClick={() =>
+                              setMistakes((prev) =>
+                                prev.includes(m) ? prev.filter((x) => x !== m) : [...prev, m]
+                              )
+                            }
+                          >
+                            {m}
+                          </button>
+                        );
+                      })}
+                    </div>
+                  </div>
+
+                  <div class="grid-2">
+                    <div>
+                      <label class="field-label">Giá thoát (đóng lệnh)</label>
+                      <input
+                        class="input input-compact"
+                        style={{ width: '100%' }}
+                        type="number"
+                        step="any"
+                        placeholder="Để trống nếu đang mở"
+                        value={exitPrice}
+                        onInput={(e) => setExitPrice((e.target as HTMLInputElement).value)}
+                      />
+                    </div>
+                    <div>
+                      <label class="field-label">Chế độ</label>
+                      <select
+                        class="select input-compact"
+                        style={{ width: '100%' }}
+                        value={mode}
+                        onChange={(e) => setMode((e.target as HTMLSelectElement).value as TradeMode)}
+                      >
+                        <option value="live">Live</option>
+                        <option value="replay">Replay</option>
+                        <option value="backtest">Backtest</option>
+                      </select>
+                    </div>
                   </div>
                 </div>
               )}
-
-              <div>
-                <label class="field-label">Lỗi mắc phải (nếu có)</label>
-                <div style={{ display: 'flex', flexWrap: 'wrap', gap: '4px' }}>
-                  {MISTAKE_OPTIONS.map((m) => {
-                    const active = mistakes.includes(m);
-                    return (
-                      <button
-                        type="button"
-                        key={m}
-                        class={`btn ${active ? 'btn-bear' : ''}`}
-                        style={{ padding: '2px 6px', fontSize: '10.5px' }}
-                        onClick={() =>
-                          setMistakes((prev) =>
-                            prev.includes(m) ? prev.filter((x) => x !== m) : [...prev, m]
-                          )
-                        }
-                      >
-                        {m}
-                      </button>
-                    );
-                  })}
-                </div>
-              </div>
-
-              <div class="grid-2">
-                <div>
-                  <label class="field-label">Giá thoát (đóng lệnh)</label>
-                  <input
-                    class="input"
-                    style={{ width: '100%' }}
-                    type="number"
-                    step="any"
-                    placeholder="Để trống nếu đang mở"
-                    value={exitPrice}
-                    onInput={(e) => setExitPrice((e.target as HTMLInputElement).value)}
-                  />
-                </div>
-                <div>
-                  <label class="field-label">Chế độ</label>
-                  <select
-                    class="select"
-                    style={{ width: '100%' }}
-                    value={mode}
-                    onChange={(e) => setMode((e.target as HTMLSelectElement).value as TradeMode)}
-                  >
-                    <option value="live">Live</option>
-                    <option value="replay">Replay</option>
-                    <option value="backtest">Backtest</option>
-                  </select>
-                </div>
-              </div>
             </div>
-          )}
-        </div>
-
-        <div style={{ display: 'flex', gap: '6px' }}>
-          <button
-            type="submit"
-            class="btn btn-primary"
-            style={{ flex: 1, justifyContent: 'center' }}
-            data-testid="save-trade-btn"
-          >
-            <Plus size={14} /> {editingId ? 'Cập nhật lệnh' : 'Lưu lệnh'}
-          </button>
-          {editingId && (
-            <button type="button" class="btn" onClick={resetForm}>
-              Hủy
-            </button>
-          )}
-        </div>
           </>
         )}
       </form>
 
-      {/* Chronological Trade List */}
-      <div class="card" data-testid="trades-timeline">
-        <div class="card-title" style={{ flexWrap: 'wrap', gap: '6px' }}>
-          <span>Danh sách lệnh ({filteredTrades.length})</span>
-          <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
-            <button
-              type="button"
-              class="btn"
-              data-testid="sort-order-btn"
-              style={{ padding: '2px 7px', fontSize: '10.5px' }}
-              onClick={() => setSortOrder((o) => (o === 'desc' ? 'asc' : 'desc'))}
-            >
-              {sortOrder === 'desc' ? 'Mới nhất ↓' : 'Cũ nhất ↑'}
-            </button>
-            <label style={{ fontSize: '11px', fontWeight: 400, color: '#94a3b8', cursor: 'pointer', display: 'flex', alignItems: 'center', gap: '4px' }}>
-              <input
-                type="checkbox"
-                checked={showAllSymbols}
-                onChange={(e) => setShowAllSymbols((e.target as HTMLInputElement).checked)}
-              />
-              Tất cả mã
-            </label>
+      {/* Chronological Trade List — fills remaining vertical height */}
+      <div
+        class="card"
+        data-testid="trades-timeline"
+        style={{
+          flex: 1,
+          minHeight: '180px',
+          display: 'flex',
+          flexDirection: 'column',
+          padding: '8px',
+          overflow: 'hidden',
+        }}
+      >
+        <div style={{ flexShrink: 0 }}>
+          <div class="card-title" style={{ flexWrap: 'wrap', gap: '4px', marginBottom: '6px', fontSize: '12px' }}>
+            <span>Danh sách lệnh ({filteredTrades.length})</span>
+            <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
+              <button
+                type="button"
+                class="btn"
+                data-testid="sort-order-btn"
+                style={{ padding: '2px 6px', fontSize: '10px' }}
+                onClick={() => setSortOrder((o) => (o === 'desc' ? 'asc' : 'desc'))}
+              >
+                {sortOrder === 'desc' ? 'Mới nhất ↓' : 'Cũ nhất ↑'}
+              </button>
+              <label
+                style={{
+                  fontSize: '10.5px',
+                  fontWeight: 400,
+                  color: '#94a3b8',
+                  cursor: 'pointer',
+                  display: 'flex',
+                  alignItems: 'center',
+                  gap: '3px',
+                }}
+              >
+                <input
+                  type="checkbox"
+                  checked={showAllSymbols}
+                  onChange={(e) => setShowAllSymbols((e.target as HTMLInputElement).checked)}
+                />
+                Tất cả mã
+              </label>
+            </div>
           </div>
-        </div>
 
-        {/* Quick time filter bar */}
-        <div
-          style={{
-            display: 'flex',
-            flexWrap: 'wrap',
-            gap: '4px',
-            marginBottom: '10px',
-          }}
-        >
-          {(
-            [
-              { id: 'all', label: 'Tất cả thời gian' },
-              { id: 'today', label: 'Hôm nay' },
-              { id: '7d', label: '7 ngày' },
-              { id: '30d', label: '30 ngày' },
-            ] as const
-          ).map((f) => (
-            <button
-              key={f.id}
-              type="button"
-              data-testid={`filter-time-${f.id}`}
-              class={`btn ${timeFilter === f.id ? 'btn-primary' : ''}`}
-              style={{ padding: '3px 8px', fontSize: '10.5px' }}
-              onClick={() => setTimeFilter(f.id)}
-            >
-              {f.label}
-            </button>
-          ))}
-        </div>
-
-        {groupedTrades.length === 0 ? (
-          <div style={{ color: '#94a3b8', fontSize: '12px' }}>
-            Chưa có lệnh nào phù hợp bộ lọc. Chọn công cụ Long/Short ở thanh trái hoặc điền form trên.
-          </div>
-        ) : (
-          <div style={{ display: 'flex', flexDirection: 'column', gap: '12px' }}>
-            {groupedTrades.map((group) => (
-              <div key={group.key} data-testid={`date-group-${group.key}`} style={{ display: 'flex', flexDirection: 'column', gap: '6px' }}>
-                <div
-                  data-testid="date-group-header"
-                  style={{
-                    display: 'flex',
-                    alignItems: 'center',
-                    justifyContent: 'space-between',
-                    padding: '4px 8px',
-                    borderRadius: '4px',
-                    background: '#131f33',
-                    borderLeft: '3px solid #38bdf8',
-                    fontSize: '11px',
-                    fontWeight: 700,
-                    color: '#e2e8f0',
+          {/* Quick time filter pills + Specific date / date-range picker */}
+          <div
+            style={{
+              display: 'flex',
+              flexDirection: 'column',
+              gap: '5px',
+              marginBottom: '8px',
+            }}
+          >
+            <div style={{ display: 'flex', flexWrap: 'wrap', gap: '4px' }}>
+              {(
+                [
+                  { id: 'all', label: 'Tất cả' },
+                  { id: 'today', label: 'Hôm nay' },
+                  { id: '7d', label: '7N' },
+                  { id: '30d', label: '30N' },
+                ] as const
+              ).map((f) => (
+                <button
+                  key={f.id}
+                  type="button"
+                  data-testid={`filter-time-${f.id}`}
+                  class={`btn ${!hasCustomDate && timeFilter === f.id ? 'btn-primary' : ''}`}
+                  style={{ padding: '2px 7px', fontSize: '10.5px' }}
+                  onClick={() => {
+                    setDateFrom('');
+                    setDateTo('');
+                    setTimeFilter(f.id);
                   }}
                 >
-                  <span>{group.label}</span>
-                  <span style={{ color: '#94a3b8', fontWeight: 500 }}>{group.items.length} lệnh</span>
-                </div>
+                  {f.label}
+                </button>
+              ))}
+            </div>
 
-                {group.items.map((t) => (
+            <div style={{ display: 'flex', alignItems: 'center', gap: '4px', flexWrap: 'wrap' }}>
+              <span style={{ fontSize: '10px', color: '#94a3b8' }}>Từ ngày</span>
+              <input
+                type="date"
+                class="date-input-compact"
+                data-testid="filter-date-from"
+                aria-label="Từ ngày"
+                value={dateFrom}
+                onInput={(e) => setDateFrom((e.target as HTMLInputElement).value)}
+                style={{ flex: 1 }}
+              />
+              <span style={{ fontSize: '10px', color: '#94a3b8' }}>Đến</span>
+              <input
+                type="date"
+                class="date-input-compact"
+                data-testid="filter-date-to"
+                aria-label="Đến ngày"
+                value={dateTo}
+                onInput={(e) => setDateTo((e.target as HTMLInputElement).value)}
+                style={{ flex: 1 }}
+              />
+              {hasCustomDate && (
+                <button
+                  type="button"
+                  class="btn"
+                  data-testid="filter-date-reset"
+                  title="Xóa lọc ngày"
+                  style={{ padding: '2px 5px', fontSize: '10px', height: '24px' }}
+                  onClick={() => {
+                    setDateFrom('');
+                    setDateTo('');
+                  }}
+                >
+                  <X size={11} />
+                </button>
+              )}
+            </div>
+          </div>
+        </div>
+
+        <div style={{ flex: 1, minHeight: 0, overflowY: 'auto', paddingRight: '2px' }}>
+          {groupedTrades.length === 0 ? (
+            <div style={{ color: '#94a3b8', fontSize: '11.5px' }}>
+              Chưa có lệnh nào phù hợp bộ lọc. Bấm Chụp chart ngay hoặc điền form trên.
+            </div>
+          ) : (
+            <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
+              {groupedTrades.map((group) => (
+                <div
+                  key={group.key}
+                  data-testid={`date-group-${group.key}`}
+                  style={{ display: 'flex', flexDirection: 'column', gap: '5px' }}
+                >
                   <div
-                    key={t.id}
-                    data-testid={`trade-item-${t.id}`}
-                    onClick={() => loadTradeIntoForm(t)}
+                    data-testid="date-group-header"
                     style={{
-                      padding: '8px',
-                      borderRadius: '6px',
-                      background: '#0b0f17',
-                      border:
-                        props.selectedTradeId === t.id
-                          ? '1px solid #38bdf8'
-                          : '1px solid #1e293b',
-                      cursor: 'pointer',
                       display: 'flex',
-                      flexDirection: 'column',
-                      gap: '6px',
+                      alignItems: 'center',
+                      justifyContent: 'space-between',
+                      padding: '3px 7px',
+                      borderRadius: '4px',
+                      background: '#131f33',
+                      borderLeft: '3px solid #38bdf8',
+                      fontSize: '10.5px',
+                      fontWeight: 700,
+                      color: '#e2e8f0',
                     }}
                   >
-                    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: '6px' }}>
-                      <div style={{ display: 'flex', alignItems: 'center', gap: '6px', flexWrap: 'wrap' }}>
-                        <span class={`pill ${t.side === 'long' ? 'pill-bull' : 'pill-bear'}`}>
-                          {t.side.toUpperCase()}
-                        </span>
-                        <strong>{t.symbol}</strong>
-                        <span style={{ color: '#94a3b8', fontSize: '11px' }}>
-                          {t.timeframe} · {t.mode}
-                        </span>
-                      </div>
-                      <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
-                        <span
+                    <span>{group.label}</span>
+                    <span style={{ color: '#94a3b8', fontWeight: 500 }}>{group.items.length} lệnh</span>
+                  </div>
+
+                  {group.items.map((t) => {
+                    const priceLine = formatTradePrices(t);
+                    const rBadge = formatRBadge(t);
+                    const bNote = getTradeBeforeNotes(t);
+                    const aNote = getTradeAfterNotes(t);
+                    const showBeforeAfterGrid = Boolean(
+                      t.beforeImage || t.afterImage || bNote || aNote
+                    );
+
+                    return (
+                      <div
+                        key={t.id}
+                        data-testid={`trade-item-${t.id}`}
+                        onClick={() => loadTradeIntoForm(t)}
+                        style={{
+                          padding: '6px 8px',
+                          borderRadius: '6px',
+                          background: '#0b0f17',
+                          border:
+                            props.selectedTradeId === t.id
+                              ? '1px solid #38bdf8'
+                              : '1px solid #1e293b',
+                          cursor: 'pointer',
+                          display: 'flex',
+                          flexDirection: 'column',
+                          gap: '4px',
+                        }}
+                      >
+                        <div
                           style={{
-                            fontWeight: 700,
-                            color: t.rMultiple >= 0 ? '#00F59B' : '#FF3B5C',
+                            display: 'flex',
+                            justifyContent: 'space-between',
+                            alignItems: 'center',
+                            gap: '4px',
                           }}
                         >
-                          {t.status === 'closed'
-                            ? `${t.rMultiple >= 0 ? '+' : ''}${t.rMultiple}R`
-                            : `Mục tiêu ${t.rMultiple}R`}
-                        </span>
-                        {t.status === 'open' && props.lastPrice !== null && t.symbol === props.symbol && (
+                          <div style={{ display: 'flex', alignItems: 'center', gap: '5px', flexWrap: 'wrap' }}>
+                            <span class={`pill ${t.side === 'long' ? 'pill-bull' : 'pill-bear'}`}>
+                              {t.side.toUpperCase()}
+                            </span>
+                            <strong style={{ fontSize: '12px' }}>{t.symbol}</strong>
+                            <span style={{ color: '#94a3b8', fontSize: '10.5px' }}>
+                              {t.timeframe} · {t.mode}
+                            </span>
+                          </div>
+                          <div style={{ display: 'flex', alignItems: 'center', gap: '4px' }}>
+                            {rBadge && (
+                              <span
+                                style={{
+                                  fontWeight: 700,
+                                  fontSize: '11px',
+                                  color: (t.rMultiple ?? 0) >= 0 ? '#00F59B' : '#FF3B5C',
+                                }}
+                              >
+                                {rBadge}
+                              </span>
+                            )}
+                            {t.status === 'open' &&
+                              props.lastPrice !== null &&
+                              t.symbol === props.symbol && (
+                                <button
+                                  type="button"
+                                  class="btn"
+                                  title="Đóng lệnh ở giá hiện tại"
+                                  style={{ padding: '2px 4px' }}
+                                  onClick={(ev) => {
+                                    ev.stopPropagation();
+                                    const exitP = props.lastPrice!;
+                                    props.onSaveTrade({
+                                      ...t,
+                                      status: 'closed',
+                                      exitPrice: exitP,
+                                      exitTime: Date.now(),
+                                      rMultiple: computeRMultiple(
+                                        t.side,
+                                        t.entryPrice,
+                                        t.stopLoss,
+                                        exitP,
+                                        t.takeProfit
+                                      ),
+                                    });
+                                  }}
+                                >
+                                  <CheckCircle2 size={11} color="#00F59B" />
+                                </button>
+                              )}
+                            <button
+                              type="button"
+                              class="btn"
+                              style={{ padding: '2px 4px' }}
+                              onClick={(ev) => {
+                                ev.stopPropagation();
+                                props.onDeleteTrade(t.id);
+                              }}
+                            >
+                              <Trash2 size={11} color="#FF3B5C" />
+                            </button>
+                          </div>
+                        </div>
+
+                        <div
+                          style={{
+                            display: 'flex',
+                            alignItems: 'center',
+                            justifyContent: 'space-between',
+                            gap: '6px',
+                            flexWrap: 'wrap',
+                          }}
+                        >
+                          <span
+                            data-testid={`trade-time-${t.id}`}
+                            style={{ fontSize: '10px', color: '#38bdf8', fontWeight: 500 }}
+                          >
+                            {formatExactTimestamp(t.entryTime || t.createdAt)}
+                          </span>
+                          {priceLine && (
+                            <span style={{ fontSize: '10.5px', color: '#94a3b8' }}>
+                              {priceLine}
+                            </span>
+                          )}
+                        </div>
+
+                        {/* Side-by-side Before & After thumbnails + separated Before/After notes */}
+                        {showBeforeAfterGrid && (
+                          <div class="grid-2" style={{ gap: '5px' }}>
+                            <div
+                              data-testid={`thumb-before-${t.id}`}
+                              title="Bấm để xem ảnh Trước + Ghi chú Trước"
+                              onClick={(ev) => {
+                                ev.stopPropagation();
+                                openViewer(t, 'before', true);
+                              }}
+                              style={{
+                                borderRadius: '4px',
+                                overflow: 'hidden',
+                                border: '1px solid #1e293b',
+                                background: '#0f1623',
+                                display: 'flex',
+                                flexDirection: 'column',
+                              }}
+                            >
+                              <div
+                                style={{
+                                  fontSize: '9.5px',
+                                  padding: '1px 5px',
+                                  background: 'rgba(11,15,23,0.85)',
+                                  color: '#38bdf8',
+                                  fontWeight: 600,
+                                }}
+                              >
+                                Trước
+                              </div>
+                              {(t.beforeImage || t.afterImage) &&
+                                (t.beforeImage ? (
+                                  <img
+                                    src={t.beforeImage}
+                                    alt="Trước"
+                                    style={{
+                                      width: '100%',
+                                      height: '50px',
+                                      objectFit: 'cover',
+                                      display: 'block',
+                                    }}
+                                  />
+                                ) : (
+                                  <div
+                                    style={{
+                                      height: '50px',
+                                      display: 'flex',
+                                      alignItems: 'center',
+                                      justifyContent: 'center',
+                                      fontSize: '9.5px',
+                                      color: '#64748b',
+                                    }}
+                                  >
+                                    Chưa có
+                                  </div>
+                                ))}
+                              {bNote && (
+                                <div
+                                  data-testid={`card-before-note-${t.id}`}
+                                  style={{
+                                    padding: '3px 5px',
+                                    fontSize: '10.5px',
+                                    color: '#cbd5e1',
+                                    borderTop: t.beforeImage || t.afterImage ? '1px solid #1e293b' : undefined,
+                                    display: '-webkit-box',
+                                    WebkitLineClamp: 2,
+                                    WebkitBoxOrient: 'vertical',
+                                    overflow: 'hidden',
+                                  }}
+                                >
+                                  {bNote}
+                                </div>
+                              )}
+                            </div>
+
+                            <div
+                              data-testid={`thumb-after-${t.id}`}
+                              title="Bấm để xem ảnh Sau + Ghi chú Sau"
+                              onClick={(ev) => {
+                                ev.stopPropagation();
+                                openViewer(t, 'after', true);
+                              }}
+                              style={{
+                                borderRadius: '4px',
+                                overflow: 'hidden',
+                                border: '1px solid #1e293b',
+                                background: '#0f1623',
+                                display: 'flex',
+                                flexDirection: 'column',
+                              }}
+                            >
+                              <div
+                                style={{
+                                  fontSize: '9.5px',
+                                  padding: '1px 5px',
+                                  background: 'rgba(11,15,23,0.85)',
+                                  color: '#00F59B',
+                                  fontWeight: 600,
+                                }}
+                              >
+                                Sau
+                              </div>
+                              {(t.beforeImage || t.afterImage) &&
+                                (t.afterImage ? (
+                                  <img
+                                    src={t.afterImage}
+                                    alt="Sau"
+                                    style={{
+                                      width: '100%',
+                                      height: '50px',
+                                      objectFit: 'cover',
+                                      display: 'block',
+                                    }}
+                                  />
+                                ) : (
+                                  <div
+                                    style={{
+                                      height: '50px',
+                                      display: 'flex',
+                                      alignItems: 'center',
+                                      justifyContent: 'center',
+                                      fontSize: '9.5px',
+                                      color: '#64748b',
+                                    }}
+                                  >
+                                    Chưa chụp
+                                  </div>
+                                ))}
+                              {aNote && (
+                                <div
+                                  data-testid={`card-after-note-${t.id}`}
+                                  style={{
+                                    padding: '3px 5px',
+                                    fontSize: '10.5px',
+                                    color: '#cbd5e1',
+                                    borderTop: t.beforeImage || t.afterImage ? '1px solid #1e293b' : undefined,
+                                    display: '-webkit-box',
+                                    WebkitLineClamp: 2,
+                                    WebkitBoxOrient: 'vertical',
+                                    overflow: 'hidden',
+                                  }}
+                                >
+                                  {aNote}
+                                </div>
+                              )}
+                            </div>
+                          </div>
+                        )}
+
+                        {/* Quick actions */}
+                        <div style={{ display: 'flex', flexWrap: 'wrap', gap: '4px' }}>
                           <button
                             type="button"
                             class="btn"
-                            title="Đóng lệnh ở giá hiện tại"
-                            style={{ padding: '2px 5px' }}
+                            data-testid={`capture-after-${t.id}`}
+                            style={{ padding: '2px 6px', fontSize: '10px' }}
                             onClick={(ev) => {
                               ev.stopPropagation();
-                              const exitP = props.lastPrice!;
-                              props.onSaveTrade({
-                                ...t,
-                                status: 'closed',
-                                exitPrice: exitP,
-                                exitTime: Date.now(),
-                                rMultiple: computeRMultiple(
-                                  t.side,
-                                  t.entryPrice,
-                                  t.stopLoss,
-                                  exitP,
-                                  t.takeProfit
-                                ),
-                              });
+                              handleCaptureAfterOnTrade(t);
                             }}
                           >
-                            <CheckCircle2 size={12} color="#00F59B" />
+                            <Camera size={10} /> Cập nhật ảnh Sau
                           </button>
-                        )}
-                        <button
-                          type="button"
-                          class="btn"
-                          style={{ padding: '2px 5px' }}
-                          onClick={(ev) => {
-                            ev.stopPropagation();
-                            props.onDeleteTrade(t.id);
-                          }}
-                        >
-                          <Trash2 size={12} color="#FF3B5C" />
-                        </button>
-                      </div>
-                    </div>
 
-                    <div
-                      data-testid={`trade-time-${t.id}`}
-                      style={{ fontSize: '10.5px', color: '#38bdf8', fontWeight: 500 }}
-                    >
-                      {formatExactTimestamp(t.entryTime || t.createdAt)}
-                    </div>
-
-                    <div style={{ fontSize: '11px', color: '#94a3b8' }}>
-                      Vào: {formatPrice(t.entryPrice, t.symbol)} · SL: {formatPrice(t.stopLoss, t.symbol)} · TP:{' '}
-                      {formatPrice(t.takeProfit, t.symbol)}
-                    </div>
-
-                    {t.notes && (
-                      <div
-                        style={{
-                          fontSize: '11.5px',
-                          color: '#cbd5e1',
-                          whiteSpace: 'pre-wrap',
-                          display: '-webkit-box',
-                          WebkitLineClamp: 2,
-                          WebkitBoxOrient: 'vertical',
-                          overflow: 'hidden',
-                        }}
-                      >
-                        {t.notes}
-                      </div>
-                    )}
-
-                    {/* Side-by-side Before & After thumbnails */}
-                    {(t.beforeImage || t.afterImage) && (
-                      <div class="grid-2" style={{ gap: '6px' }}>
-                        <div
-                          data-testid={`thumb-before-${t.id}`}
-                          title="Bấm để xem ảnh Trước + Ghi chú"
-                          onClick={(ev) => {
-                            ev.stopPropagation();
-                            openViewer(t, 'before', true);
-                          }}
-                          style={{
-                            borderRadius: '4px',
-                            overflow: 'hidden',
-                            border: '1px solid #1e293b',
-                            background: '#0f1623',
-                            position: 'relative',
-                          }}
-                        >
-                          <div
-                            style={{
-                              fontSize: '9.5px',
-                              padding: '2px 5px',
-                              background: 'rgba(11,15,23,0.85)',
-                              color: '#38bdf8',
-                              fontWeight: 600,
-                            }}
-                          >
-                            Trước
-                          </div>
-                          {t.beforeImage ? (
-                            <img
-                              src={t.beforeImage}
-                              alt="Trước"
-                              style={{ width: '100%', height: '58px', objectFit: 'cover', display: 'block' }}
-                            />
-                          ) : (
-                            <div style={{ height: '58px', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: '10px', color: '#64748b' }}>
-                              Chưa có
-                            </div>
+                          {(t.beforeImage || t.afterImage || bNote || aNote) && (
+                            <button
+                              type="button"
+                              class="btn"
+                              data-testid={`compare-btn-${t.id}`}
+                              style={{ padding: '2px 6px', fontSize: '10px' }}
+                              onClick={(ev) => {
+                                ev.stopPropagation();
+                                openViewer(t, 'both', true);
+                              }}
+                            >
+                              <Columns2 size={10} /> So sánh Trước / Sau
+                            </button>
                           )}
-                        </div>
 
-                        <div
-                          data-testid={`thumb-after-${t.id}`}
-                          title="Bấm để xem ảnh Sau + Ghi chú"
-                          onClick={(ev) => {
-                            ev.stopPropagation();
-                            openViewer(t, 'after', true);
-                          }}
-                          style={{
-                            borderRadius: '4px',
-                            overflow: 'hidden',
-                            border: '1px solid #1e293b',
-                            background: '#0f1623',
-                            position: 'relative',
-                          }}
-                        >
-                          <div
-                            style={{
-                              fontSize: '9.5px',
-                              padding: '2px 5px',
-                              background: 'rgba(11,15,23,0.85)',
-                              color: '#00F59B',
-                              fontWeight: 600,
-                            }}
-                          >
-                            Sau
-                          </div>
-                          {t.afterImage ? (
-                            <img
-                              src={t.afterImage}
-                              alt="Sau"
-                              style={{ width: '100%', height: '58px', objectFit: 'cover', display: 'block' }}
-                            />
-                          ) : (
-                            <div style={{ height: '58px', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: '10px', color: '#64748b' }}>
-                              Chưa chụp
-                            </div>
+                          {Boolean(t.drawingsSnapshot) && (
+                            <button
+                              type="button"
+                              class="btn"
+                              data-testid={`restore-drawings-${t.id}`}
+                              style={{ padding: '2px 6px', fontSize: '10px' }}
+                              onClick={(ev) => {
+                                ev.stopPropagation();
+                                props.onRestoreDrawings(t.drawingsSnapshot);
+                              }}
+                            >
+                              <PenLine size={10} /> Khôi phục nét vẽ
+                            </button>
                           )}
                         </div>
                       </div>
-                    )}
-
-                    {/* Quick actions: Update After image, Compare, Restore drawings */}
-                    <div style={{ display: 'flex', flexWrap: 'wrap', gap: '4px' }}>
-                      <button
-                        type="button"
-                        class="btn"
-                        data-testid={`capture-after-${t.id}`}
-                        style={{ padding: '3px 7px', fontSize: '10.5px' }}
-                        onClick={(ev) => {
-                          ev.stopPropagation();
-                          handleCaptureAfterOnTrade(t);
-                        }}
-                      >
-                        <Camera size={11} /> Cập nhật ảnh Sau
-                      </button>
-
-                      {(t.beforeImage || t.afterImage) && (
-                        <button
-                          type="button"
-                          class="btn"
-                          data-testid={`compare-btn-${t.id}`}
-                          style={{ padding: '3px 7px', fontSize: '10.5px' }}
-                          onClick={(ev) => {
-                            ev.stopPropagation();
-                            openViewer(t, 'both', true);
-                          }}
-                        >
-                          <Columns2 size={11} /> So sánh Trước / Sau
-                        </button>
-                      )}
-
-                      {Boolean(t.drawingsSnapshot) && (
-                        <button
-                          type="button"
-                          class="btn"
-                          data-testid={`restore-drawings-${t.id}`}
-                          style={{ padding: '3px 7px', fontSize: '10.5px' }}
-                          onClick={(ev) => {
-                            ev.stopPropagation();
-                            props.onRestoreDrawings(t.drawingsSnapshot);
-                          }}
-                        >
-                          <PenLine size={11} /> Khôi phục nét vẽ
-                        </button>
-                      )}
-                    </div>
-                  </div>
-                ))}
-              </div>
-            ))}
-          </div>
-        )}
+                    );
+                  })}
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
       </div>
 
-      {/* Image + Note Viewer Modal (Single Before, Single After, or Side-by-Side Both) */}
+      {/* Image + Separated Before/After Note Viewer Modal */}
       {viewerTrade && (
         <div
           data-testid="compare-modal"
@@ -1260,21 +1559,21 @@ export function TradesTab(props: TradesTabProps) {
                 <span style={{ color: '#94a3b8', fontSize: '12px' }}>
                   {viewerTrade.timeframe} · {formatExactTimestamp(viewerTrade.entryTime || viewerTrade.createdAt)}
                 </span>
-                <span style={{ color: '#cbd5e1', fontSize: '12px' }}>
-                  Vào {formatPrice(viewerTrade.entryPrice, viewerTrade.symbol)} · SL{' '}
-                  {formatPrice(viewerTrade.stopLoss, viewerTrade.symbol)} · TP{' '}
-                  {formatPrice(viewerTrade.takeProfit, viewerTrade.symbol)}
-                </span>
-                <span
-                  style={{
-                    fontWeight: 700,
-                    color: viewerTrade.rMultiple >= 0 ? '#00F59B' : '#FF3B5C',
-                  }}
-                >
-                  {viewerTrade.status === 'closed'
-                    ? `${viewerTrade.rMultiple >= 0 ? '+' : ''}${viewerTrade.rMultiple}R`
-                    : `Mục tiêu ${viewerTrade.rMultiple}R`}
-                </span>
+                {formatTradePrices(viewerTrade) && (
+                  <span style={{ color: '#cbd5e1', fontSize: '12px' }}>
+                    {formatTradePrices(viewerTrade)}
+                  </span>
+                )}
+                {formatRBadge(viewerTrade) && (
+                  <span
+                    style={{
+                      fontWeight: 700,
+                      color: (viewerTrade.rMultiple ?? 0) >= 0 ? '#00F59B' : '#FF3B5C',
+                    }}
+                  >
+                    {formatRBadge(viewerTrade)}
+                  </span>
+                )}
               </div>
 
               <div style={{ display: 'flex', alignItems: 'center', gap: '6px', flexWrap: 'wrap' }}>
@@ -1305,6 +1604,18 @@ export function TradesTab(props: TradesTabProps) {
                 >
                   Cả 2 ảnh (Trước & Sau)
                 </button>
+                {viewerIsSaved && (
+                  <button
+                    type="button"
+                    class="btn btn-primary"
+                    data-testid="modal-save-notes-btn"
+                    disabled={savingModalNotes || !modalNotesDirty}
+                    style={{ padding: '4px 10px', fontSize: '11.5px' }}
+                    onClick={handleSaveModalNotes}
+                  >
+                    {savingModalNotes ? 'Đang lưu...' : 'Lưu ghi chú'}
+                  </button>
+                )}
                 <button
                   type="button"
                   class="btn"
@@ -1329,7 +1640,7 @@ export function TradesTab(props: TradesTabProps) {
                 class={viewerMode === 'both' ? 'grid-2' : undefined}
                 style={
                   viewerMode === 'both'
-                    ? { gap: '12px' }
+                    ? { gap: '12px', alignItems: 'start' }
                     : { display: 'flex', flexDirection: 'column', gap: '12px' }
                 }
               >
@@ -1341,6 +1652,8 @@ export function TradesTab(props: TradesTabProps) {
                       border: '1px solid #1e293b',
                       borderRadius: '8px',
                       overflow: 'hidden',
+                      display: 'flex',
+                      flexDirection: 'column',
                     }}
                   >
                     <div
@@ -1366,7 +1679,7 @@ export function TradesTab(props: TradesTabProps) {
                         alt="Chart Trước"
                         style={{
                           width: '100%',
-                          maxHeight: viewerMode === 'both' ? '54vh' : '62vh',
+                          maxHeight: viewerMode === 'both' ? '48vh' : '56vh',
                           objectFit: 'contain',
                           display: 'block',
                         }}
@@ -1374,7 +1687,7 @@ export function TradesTab(props: TradesTabProps) {
                     ) : (
                       <div
                         style={{
-                          height: '240px',
+                          height: '200px',
                           display: 'flex',
                           alignItems: 'center',
                           justifyContent: 'center',
@@ -1384,6 +1697,46 @@ export function TradesTab(props: TradesTabProps) {
                         Chưa có ảnh Trước
                       </div>
                     )}
+                    <div
+                      style={{
+                        padding: '10px',
+                        borderTop: '1px solid #1e293b',
+                        background: '#0f1623',
+                      }}
+                    >
+                      <div
+                        style={{
+                          fontSize: '11px',
+                          fontWeight: 600,
+                          color: '#38bdf8',
+                          marginBottom: '5px',
+                        }}
+                      >
+                        Ghi chú Trước (lúc vào)
+                      </div>
+                      {viewerIsSaved ? (
+                        <textarea
+                          class="textarea"
+                          data-testid="modal-before-notes-input"
+                          style={{ width: '100%', minHeight: '64px', resize: 'vertical' }}
+                          placeholder="Nhập hoặc cập nhật ghi chú Trước..."
+                          value={modalBeforeNotes}
+                          onInput={(e) =>
+                            setModalBeforeNotes((e.target as HTMLTextAreaElement).value)
+                          }
+                        />
+                      ) : (
+                        <div
+                          style={{
+                            whiteSpace: 'pre-wrap',
+                            fontSize: '12px',
+                            color: getTradeBeforeNotes(viewerTrade) ? '#e2e8f0' : '#64748b',
+                          }}
+                        >
+                          {getTradeBeforeNotes(viewerTrade) || 'Chưa có ghi chú Trước'}
+                        </div>
+                      )}
+                    </div>
                   </div>
                 )}
 
@@ -1395,6 +1748,8 @@ export function TradesTab(props: TradesTabProps) {
                       border: '1px solid #1e293b',
                       borderRadius: '8px',
                       overflow: 'hidden',
+                      display: 'flex',
+                      flexDirection: 'column',
                     }}
                   >
                     <div
@@ -1420,7 +1775,7 @@ export function TradesTab(props: TradesTabProps) {
                         alt="Chart Sau"
                         style={{
                           width: '100%',
-                          maxHeight: viewerMode === 'both' ? '54vh' : '62vh',
+                          maxHeight: viewerMode === 'both' ? '48vh' : '56vh',
                           objectFit: 'contain',
                           display: 'block',
                         }}
@@ -1428,7 +1783,7 @@ export function TradesTab(props: TradesTabProps) {
                     ) : (
                       <div
                         style={{
-                          height: '240px',
+                          height: '200px',
                           display: 'flex',
                           alignItems: 'center',
                           justifyContent: 'center',
@@ -1438,56 +1793,46 @@ export function TradesTab(props: TradesTabProps) {
                         Chưa có ảnh Sau
                       </div>
                     )}
-                  </div>
-                )}
-              </div>
-
-              {/* Ghi chú lệnh (with inline edit & save for saved trades) */}
-              <div
-                data-testid="modal-notes-section"
-                style={{
-                  padding: '10px 12px',
-                  borderRadius: '8px',
-                  background: '#0b0f17',
-                  border: '1px solid #1e293b',
-                  fontSize: '12.5px',
-                  color: '#e2e8f0',
-                }}
-              >
-                <div
-                  style={{
-                    display: 'flex',
-                    alignItems: 'center',
-                    justifyContent: 'space-between',
-                    marginBottom: '6px',
-                  }}
-                >
-                  <strong style={{ color: '#94a3b8', fontSize: '11px' }}>GHI CHÚ LỆNH</strong>
-                  {viewerIsSaved && (
-                    <button
-                      type="button"
-                      class="btn btn-primary"
-                      data-testid="modal-save-notes-btn"
-                      disabled={savingModalNotes || modalNotes === (viewerTrade.notes || '')}
-                      style={{ padding: '3px 10px', fontSize: '11px' }}
-                      onClick={handleSaveModalNotes}
+                    <div
+                      style={{
+                        padding: '10px',
+                        borderTop: '1px solid #1e293b',
+                        background: '#0f1623',
+                      }}
                     >
-                      {savingModalNotes ? 'Đang lưu...' : 'Lưu ghi chú'}
-                    </button>
-                  )}
-                </div>
-                {viewerIsSaved ? (
-                  <textarea
-                    class="textarea"
-                    data-testid="modal-notes-input"
-                    style={{ width: '100%', minHeight: '64px', resize: 'vertical' }}
-                    placeholder="Nhập hoặc cập nhật ghi chú lệnh..."
-                    value={modalNotes}
-                    onInput={(e) => setModalNotes((e.target as HTMLTextAreaElement).value)}
-                  />
-                ) : (
-                  <div style={{ whiteSpace: 'pre-wrap', color: viewerTrade.notes ? '#e2e8f0' : '#64748b' }}>
-                    {viewerTrade.notes || 'Chưa có ghi chú'}
+                      <div
+                        style={{
+                          fontSize: '11px',
+                          fontWeight: 600,
+                          color: '#00F59B',
+                          marginBottom: '5px',
+                        }}
+                      >
+                        Ghi chú Sau (kết quả)
+                      </div>
+                      {viewerIsSaved ? (
+                        <textarea
+                          class="textarea"
+                          data-testid="modal-after-notes-input"
+                          style={{ width: '100%', minHeight: '64px', resize: 'vertical' }}
+                          placeholder="Nhập hoặc cập nhật ghi chú Sau..."
+                          value={modalAfterNotes}
+                          onInput={(e) =>
+                            setModalAfterNotes((e.target as HTMLTextAreaElement).value)
+                          }
+                        />
+                      ) : (
+                        <div
+                          style={{
+                            whiteSpace: 'pre-wrap',
+                            fontSize: '12px',
+                            color: getTradeAfterNotes(viewerTrade) ? '#e2e8f0' : '#64748b',
+                          }}
+                        >
+                          {getTradeAfterNotes(viewerTrade) || 'Chưa có ghi chú Sau'}
+                        </div>
+                      )}
+                    </div>
                   </div>
                 )}
               </div>

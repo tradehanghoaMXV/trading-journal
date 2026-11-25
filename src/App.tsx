@@ -98,11 +98,11 @@ export function App() {
     for (const t of openReplay) {
       let exitPrice: number | null = null;
       if (t.side === 'long') {
-        if (bar.low <= t.stopLoss) exitPrice = t.stopLoss;
-        else if (bar.high >= t.takeProfit) exitPrice = t.takeProfit;
+        if (t.stopLoss !== undefined && bar.low <= t.stopLoss) exitPrice = t.stopLoss;
+        else if (t.takeProfit !== undefined && bar.high >= t.takeProfit) exitPrice = t.takeProfit;
       } else {
-        if (bar.high >= t.stopLoss) exitPrice = t.stopLoss;
-        else if (bar.low <= t.takeProfit) exitPrice = t.takeProfit;
+        if (t.stopLoss !== undefined && bar.high >= t.stopLoss) exitPrice = t.stopLoss;
+        else if (t.takeProfit !== undefined && bar.low <= t.takeProfit) exitPrice = t.takeProfit;
       }
       if (exitPrice !== null) {
         const updated: Trade = {

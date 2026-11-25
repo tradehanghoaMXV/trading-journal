@@ -61,12 +61,16 @@ export function tradeChecklistPct(trade: Trade): number {
   return (checked / trade.checklist.length) * 100;
 }
 
+function safeR(t: Trade): number {
+  return typeof t.rMultiple === 'number' && Number.isFinite(t.rMultiple) ? t.rMultiple : 0;
+}
+
 export function computeJournalStats(trades: Trade[]): JournalStats {
   const closed = [...trades]
     .filter((t) => t.status === 'closed')
     .sort((a, b) => (a.exitTime ?? a.entryTime) - (b.exitTime ?? b.entryTime));
 
-  const rs = closed.map((t) => t.rMultiple);
+  const rs = closed.map(safeR);
   const wins = rs.filter((r) => r > 0);
   const losses = rs.filter((r) => r <= 0);
   const grossWin = wins.reduce((a, b) => a + b, 0);
@@ -86,7 +90,8 @@ export function computeJournalStats(trades: Trade[]): JournalStats {
   let maxDrawdownR = 0;
   const equityCurveR: JournalStats['equityCurveR'] = [];
   closed.forEach((t, idx) => {
-    cumR = Number((cumR + t.rMultiple).toFixed(2));
+    const r = safeR(t);
+    cumR = Number((cumR + r).toFixed(2));
     if (cumR > peakR) peakR = cumR;
     const dd = peakR - cumR;
     if (dd > maxDrawdownR) maxDrawdownR = dd;
@@ -113,8 +118,9 @@ export function computeJournalStats(trades: Trade[]): JournalStats {
     ruleBreakLoss: { count: 0, totalR: 0 },
   };
   for (const t of closed) {
+    const r = safeR(t);
     const isCompliant = tradeChecklistPct(t) >= 80 && t.mistakes.length === 0;
-    const isWin = t.rMultiple > 0;
+    const isWin = r > 0;
     const cell =
       isCompliant && isWin
         ? matrix.compliantWin
@@ -124,7 +130,7 @@ export function computeJournalStats(trades: Trade[]): JournalStats {
             ? matrix.ruleBreakWin
             : matrix.ruleBreakLoss;
     cell.count += 1;
-    cell.totalR = Number((cell.totalR + t.rMultiple).toFixed(2));
+    cell.totalR = Number((cell.totalR + r).toFixed(2));
   }
 
   const liveTrades = closed.filter((t) => t.mode === 'live');
@@ -142,8 +148,8 @@ export function computeJournalStats(trades: Trade[]): JournalStats {
     matrix,
     equityCurveR,
     rollingExpectancy20,
-    liveAvgR: liveTrades.length > 0 ? Number(mean(liveTrades.map((t) => t.rMultiple)).toFixed(2)) : null,
-    testAvgR: testTrades.length > 0 ? Number(mean(testTrades.map((t) => t.rMultiple)).toFixed(2)) : null,
+    liveAvgR: liveTrades.length > 0 ? Number(mean(liveTrades.map(safeR)).toFixed(2)) : null,
+    testAvgR: testTrades.length > 0 ? Number(mean(testTrades.map(safeR)).toFixed(2)) : null,
     liveCount: liveTrades.length,
     testCount: testTrades.length,
   };
@@ -181,7 +187,7 @@ export function computeConsistencyScore(
   }
 
   const aChecklist = mean(closed.map(tradeChecklistPct));
-  const rs = closed.map((t) => t.rMultiple);
+  const rs = closed.map(safeR);
   const meanR = mean(rs);
 
   const rolling10: number[] = [];
@@ -200,8 +206,8 @@ export function computeConsistencyScore(
   let weightC = 0.3;
 
   if (live.length > 0 && test.length > 0) {
-    const eLive = mean(live.map((t) => t.rMultiple));
-    const eTest = mean(test.map((t) => t.rMultiple));
+    const eLive = mean(live.map(safeR));
+    const eTest = mean(test.map(safeR));
     cLiveTestMatch =
       100 * Math.max(0, 1 - Math.abs(eLive - eTest) / Math.max(Math.abs(eTest), 0.25));
   } else {

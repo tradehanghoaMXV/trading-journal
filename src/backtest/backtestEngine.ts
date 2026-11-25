@@ -117,9 +117,11 @@ export function runBacktest(bars: OHLCV[], params: BacktestParams): BacktestResu
   const costFrac = params.spreadBps / 10_000;
 
   const closeTrade = (t: Trade, exitTime: number, exitPrice: number) => {
-    const risk = Math.abs(t.entryPrice - t.stopLoss);
-    const rawDiff = t.side === 'long' ? exitPrice - t.entryPrice : t.entryPrice - exitPrice;
-    const feeCost = t.entryPrice * costFrac;
+    const ep = t.entryPrice ?? exitPrice;
+    const sl = t.stopLoss ?? ep;
+    const risk = Math.abs(ep - sl);
+    const rawDiff = t.side === 'long' ? exitPrice - ep : ep - exitPrice;
+    const feeCost = ep * costFrac;
     const r = risk > 0 ? Number(((rawDiff - feeCost) / risk).toFixed(2)) : 0;
     t.exitTime = exitTime;
     t.exitPrice = exitPrice;
@@ -136,11 +138,11 @@ export function runBacktest(bars: OHLCV[], params: BacktestParams): BacktestResu
     // Check SL / TP / Exit on open trade
     if (openTrade) {
       if (openTrade.side === 'long') {
-        if (bar.low <= openTrade.stopLoss) {
+        if (openTrade.stopLoss !== undefined && bar.low <= openTrade.stopLoss) {
           closeTrade(openTrade, bar.time, openTrade.stopLoss);
           continue;
         }
-        if (bar.high >= openTrade.takeProfit) {
+        if (openTrade.takeProfit !== undefined && bar.high >= openTrade.takeProfit) {
           closeTrade(openTrade, bar.time, openTrade.takeProfit);
           continue;
         }
@@ -155,11 +157,11 @@ export function runBacktest(bars: OHLCV[], params: BacktestParams): BacktestResu
           }
         }
       } else {
-        if (bar.high >= openTrade.stopLoss) {
+        if (openTrade.stopLoss !== undefined && bar.high >= openTrade.stopLoss) {
           closeTrade(openTrade, bar.time, openTrade.stopLoss);
           continue;
         }
-        if (bar.low <= openTrade.takeProfit) {
+        if (openTrade.takeProfit !== undefined && bar.low <= openTrade.takeProfit) {
           closeTrade(openTrade, bar.time, openTrade.takeProfit);
           continue;
         }

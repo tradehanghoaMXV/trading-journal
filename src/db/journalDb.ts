@@ -21,9 +21,9 @@ export interface Trade {
   timeframe: string;
   side: TradeSide;
   entryTime: number;
-  entryPrice: number;
-  stopLoss: number;
-  takeProfit: number;
+  entryPrice?: number;
+  stopLoss?: number;
+  takeProfit?: number;
   exitTime?: number;
   exitPrice?: number;
   size?: number;
@@ -31,8 +31,10 @@ export interface Trade {
   checklist: boolean[];
   emotion: string;
   mistakes: string[];
-  notes: string;
-  rMultiple: number;
+  notes?: string;
+  beforeNotes?: string;
+  afterNotes?: string;
+  rMultiple?: number;
   status: TradeStatus;
   createdAt: number;
   beforeImage?: string;
@@ -40,6 +42,14 @@ export interface Trade {
   beforeCapturedAt?: number;
   afterCapturedAt?: number;
   drawingsSnapshot?: unknown;
+}
+
+export function getTradeBeforeNotes(t: Pick<Trade, 'beforeNotes' | 'notes'>): string {
+  return t.beforeNotes ?? t.notes ?? '';
+}
+
+export function getTradeAfterNotes(t: Pick<Trade, 'afterNotes'>): string {
+  return t.afterNotes ?? '';
 }
 
 export interface ChartNote {
@@ -120,14 +130,25 @@ export const DEFAULT_STRATEGIES: Strategy[] = [
 
 export function computeRMultiple(
   side: TradeSide,
-  entryPrice: number,
-  stopLoss: number,
+  entryPrice?: number,
+  stopLoss?: number,
   exitPrice?: number,
   takeProfit?: number
-): number {
+): number | undefined {
+  if (
+    entryPrice === undefined ||
+    stopLoss === undefined ||
+    !Number.isFinite(entryPrice) ||
+    !Number.isFinite(stopLoss)
+  ) {
+    return undefined;
+  }
+  const target = exitPrice ?? takeProfit;
+  if (target === undefined || !Number.isFinite(target)) {
+    return undefined;
+  }
   const risk = Math.abs(entryPrice - stopLoss);
   if (risk <= 1e-9) return 0;
-  const target = exitPrice ?? takeProfit ?? entryPrice;
   const diff = side === 'long' ? target - entryPrice : entryPrice - target;
   return Number((diff / risk).toFixed(2));
 }

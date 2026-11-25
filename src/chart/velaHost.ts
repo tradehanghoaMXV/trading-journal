@@ -62,15 +62,16 @@ function drawPositionBox(
   opts: {
     entryTime: number;
     endTime: number;
-    entryPrice: number;
-    stopLoss: number;
-    takeProfit: number;
+    entryPrice?: number;
+    stopLoss?: number;
+    takeProfit?: number;
     side: TradeSide;
     label: string;
     selected?: boolean;
     isDraft?: boolean;
   }
 ) {
+  if (opts.entryPrice === undefined || !Number.isFinite(opts.entryPrice)) return;
   const { coords, scale, bounds } = args;
   const x1 = coords.timeToX(opts.entryTime);
   let x2 = coords.timeToX(opts.endTime);
@@ -80,14 +81,20 @@ function drawPositionBox(
   }
 
   const yEntry = coords.priceToY(opts.entryPrice, scale, bounds);
-  const ySl = coords.priceToY(opts.stopLoss, scale, bounds);
-  const yTp = coords.priceToY(opts.takeProfit, scale, bounds);
-  if (!Number.isFinite(yEntry) || !Number.isFinite(ySl) || !Number.isFinite(yTp)) return;
+  if (!Number.isFinite(yEntry)) return;
+  const ySl =
+    opts.stopLoss !== undefined && Number.isFinite(opts.stopLoss)
+      ? coords.priceToY(opts.stopLoss, scale, bounds)
+      : NaN;
+  const yTp =
+    opts.takeProfit !== undefined && Number.isFinite(opts.takeProfit)
+      ? coords.priceToY(opts.takeProfit, scale, bounds)
+      : NaN;
 
   const boxW = Math.max(40, x2 - x1);
 
-  const tpTop = Math.min(yEntry, yTp);
-  const tpH = Math.abs(yTp - yEntry);
+  const tpTop = Number.isFinite(yTp) ? Math.min(yEntry, yTp) : yEntry;
+  const tpH = Number.isFinite(yTp) ? Math.abs(yTp - yEntry) : 0;
   if (tpH > 1) {
     ctx.fillStyle = opts.isDraft ? 'rgba(0, 245, 155, 0.24)' : 'rgba(0, 245, 155, 0.14)';
     ctx.fillRect(x1, tpTop, boxW, tpH);
@@ -96,8 +103,8 @@ function drawPositionBox(
     ctx.strokeRect(x1, tpTop, boxW, tpH);
   }
 
-  const slTop = Math.min(yEntry, ySl);
-  const slH = Math.abs(ySl - yEntry);
+  const slTop = Number.isFinite(ySl) ? Math.min(yEntry, ySl) : yEntry;
+  const slH = Number.isFinite(ySl) ? Math.abs(ySl - yEntry) : 0;
   if (slH > 1) {
     ctx.fillStyle = opts.isDraft ? 'rgba(255, 59, 92, 0.24)' : 'rgba(255, 59, 92, 0.14)';
     ctx.fillRect(x1, slTop, boxW, slH);
@@ -199,18 +206,26 @@ function ensureJournalLayer() {
 
         for (const t of payload.trades) {
           if (t.symbol !== payload.symbol) continue;
+          if (t.entryPrice === undefined || !Number.isFinite(t.entryPrice)) continue;
           const endTime =
             t.exitTime ?? Math.max(lastBarTime, t.entryTime + args.coords.barInterval * 8);
-          const risk = Math.abs(t.entryPrice - t.stopLoss);
-          const reward = Math.abs(t.takeProfit - t.entryPrice);
-          const rr = risk > 0 ? (reward / risk).toFixed(2) : '0.00';
+          const hasSl = t.stopLoss !== undefined && Number.isFinite(t.stopLoss);
+          const hasTp = t.takeProfit !== undefined && Number.isFinite(t.takeProfit);
+          const risk = hasSl ? Math.abs(t.entryPrice - t.stopLoss!) : 0;
+          const reward = hasTp ? Math.abs(t.takeProfit! - t.entryPrice) : 0;
+          const rr = hasSl && hasTp && risk > 0 ? (reward / risk).toFixed(2) : null;
           const prefix = t.side === 'long' ? 'LONG' : 'SHORT';
           const modeTag =
             t.mode === 'replay' ? ' [Replay]' : t.mode === 'backtest' ? ' [BT]' : '';
+          const hasR = typeof t.rMultiple === 'number' && Number.isFinite(t.rMultiple);
           const label =
             t.status === 'closed'
-              ? `${prefix}${modeTag} ${t.rMultiple >= 0 ? '+' : ''}${t.rMultiple}R`
-              : `${prefix}${modeTag} R:R 1:${rr}`;
+              ? hasR
+                ? `${prefix}${modeTag} ${t.rMultiple! >= 0 ? '+' : ''}${t.rMultiple}R`
+                : `${prefix}${modeTag}`
+              : rr !== null
+                ? `${prefix}${modeTag} R:R 1:${rr}`
+                : `${prefix}${modeTag}`;
 
           drawPositionBox(ctx, args, {
             entryTime: t.entryTime,

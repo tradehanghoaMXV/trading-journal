@@ -324,6 +324,7 @@ function ensureJournalLayer() {
 export class VelaJournalHost {
   public ws: VelaWorkspace;
   public dukascopyProvider: DukascopyPythProvider;
+  private container: HTMLElement;
   private binanceProvider: BinanceVisionProvider;
   private latestBars: OHLCV[] = [];
   private onSnapshot?: (snap: ChartSnapshot) => void;
@@ -342,6 +343,7 @@ export class VelaJournalHost {
       onBarUpdate?: (bar: OHLCV, symbol: string, timeframe: string) => void;
     }
   ) {
+    this.container = container;
     this.onSnapshot = opts.onSnapshot;
     ensureViLocale();
     registerJournalIndicators();
@@ -531,6 +533,120 @@ export class VelaJournalHost {
   getActiveBars(): OHLCV[] {
     const cache = lastActiveCanvas ? coordCaches.get(lastActiveCanvas) : undefined;
     return cache?.args.bars ? [...cache.args.bars] : this.latestBars;
+  }
+
+  getDrawingsSnapshot(): unknown {
+    try {
+      const doc = this.ws.chart.drawings.toJSON();
+      if (!doc || !Array.isArray(doc.drawings) || doc.drawings.length === 0) {
+        return null;
+      }
+      return doc;
+    } catch {
+      return null;
+    }
+  }
+
+  restoreDrawingsSnapshot(doc: unknown): boolean {
+    if (!doc) return false;
+    try {
+      this.ws.chart.drawings.fromJSON(doc);
+      return true;
+    } catch {
+      return false;
+    }
+  }
+
+  async captureChartSnapshot(): Promise<string> {
+    await new Promise<void>((resolve) => requestAnimationFrame(() => resolve()));
+
+    let sourceCanvas: HTMLCanvasElement | null = null;
+    try {
+      sourceCanvas = this.ws.chart.renderer.screenshotCanvas();
+    } catch {
+      sourceCanvas = null;
+    }
+
+    if (!sourceCanvas || sourceCanvas.width === 0 || sourceCanvas.height === 0) {
+      // Fallback: composite all visible canvases inside the chart container
+      const rect = this.container.getBoundingClientRect();
+      const dpr = Math.min(window.devicePixelRatio || 1, 2);
+      const fallback = document.createElement('canvas');
+      fallback.width = Math.max(1, Math.round(rect.width * dpr));
+      fallback.height = Math.max(1, Math.round(rect.height * dpr));
+      const fctx = fallback.getContext('2d');
+      if (fctx) {
+        fctx.fillStyle = '#0b0f17';
+        fctx.fillRect(0, 0, fallback.width, fallback.height);
+        const canvases = Array.from(this.container.querySelectorAll('canvas'));
+        for (const c of canvases) {
+          if (c.width === 0 || c.height === 0) continue;
+          const cr = c.getBoundingClientRect();
+          if (cr.width === 0 || cr.height === 0) continue;
+          const dx = (cr.left - rect.left) * dpr;
+          const dy = (cr.top - rect.top) * dpr;
+          const dw = cr.width * dpr;
+          const dh = cr.height * dpr;
+          try {
+            fctx.drawImage(c, dx, dy, dw, dh);
+          } catch {
+            // ignore tainted or unready canvas
+          }
+        }
+      }
+      sourceCanvas = fallback;
+    }
+
+    const maxWidth = 1440;
+    const scale = sourceCanvas.width > maxWidth ? maxWidth / sourceCanvas.width : 1;
+    const outW = Math.max(1, Math.round(sourceCanvas.width * scale));
+    const outH = Math.max(1, Math.round(sourceCanvas.height * scale));
+
+    const out = document.createElement('canvas');
+    out.width = outW;
+    out.height = outH;
+    const ctx = out.getContext('2d');
+    if (!ctx) {
+      return sourceCanvas.toDataURL('image/jpeg', 0.85);
+    }
+
+    ctx.fillStyle = '#0b0f17';
+    ctx.fillRect(0, 0, outW, outH);
+    ctx.drawImage(sourceCanvas, 0, 0, outW, outH);
+
+    // Draw compact symbol / timeframe / timestamp badge
+    const sym = this.ws.chart.market.symbol ?? 'CHART';
+    const tf = this.ws.chart.market.timeframe ?? '';
+    const nowStr = new Date().toLocaleString('vi-VN', {
+      day: '2-digit',
+      month: '2-digit',
+      hour: '2-digit',
+      minute: '2-digit',
+    });
+    const badgeText = `${sym}${tf ? ` · ${tf}` : ''} · ${nowStr}`;
+    ctx.save();
+    ctx.font = '600 11px Inter, system-ui, sans-serif';
+    const tw = ctx.measureText(badgeText).width;
+    const bw = tw + 14;
+    const bh = 22;
+    const bx = Math.max(12, outW - bw - 78);
+    const by = 10;
+    ctx.fillStyle = 'rgba(11, 15, 23, 0.82)';
+    drawRoundRect(ctx, bx, by, bw, bh, 6);
+    ctx.fill();
+    ctx.strokeStyle = 'rgba(56, 189, 248, 0.5)';
+    ctx.lineWidth = 1;
+    ctx.stroke();
+    ctx.fillStyle = '#f8fafc';
+    ctx.textBaseline = 'middle';
+    ctx.fillText(badgeText, bx + 8, by + bh / 2);
+    ctx.restore();
+
+    const webp = out.toDataURL('image/webp', 0.85);
+    if (webp.startsWith('data:image/webp')) {
+      return webp;
+    }
+    return out.toDataURL('image/jpeg', 0.85);
   }
 
   destroy() {

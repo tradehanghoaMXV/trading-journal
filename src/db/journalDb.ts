@@ -35,6 +35,11 @@ export interface Trade {
   rMultiple: number;
   status: TradeStatus;
   createdAt: number;
+  beforeImage?: string;
+  afterImage?: string;
+  beforeCapturedAt?: number;
+  afterCapturedAt?: number;
+  drawingsSnapshot?: unknown;
 }
 
 export interface ChartNote {
@@ -136,6 +141,13 @@ class TradingJournalDB extends Dexie {
   constructor() {
     super('TradingJournalDB');
     this.version(1).stores({
+      strategies: 'id, name, createdAt',
+      trades: 'id, mode, symbol, strategyId, status, entryTime, createdAt',
+      notes: 'id, symbol, time, tradeId, createdAt',
+      drawings: 'symbol, updatedAt',
+    });
+
+    this.version(2).stores({
       strategies: 'id, name, createdAt',
       trades: 'id, mode, symbol, strategyId, status, entryTime, createdAt',
       notes: 'id, symbol, time, tradeId, createdAt',

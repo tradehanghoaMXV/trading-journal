@@ -424,6 +424,12 @@ export function App() {
                     setTrades(await db.trades.toArray());
                   }}
                   onClearSeed={() => setTradeSeed(null)}
+                  onCaptureChart={async () => {
+                    if (!hostRef.current) return '';
+                    return hostRef.current.captureChartSnapshot();
+                  }}
+                  onGetDrawings={() => hostRef.current?.getDrawingsSnapshot() ?? null}
+                  onRestoreDrawings={(doc) => hostRef.current?.restoreDrawingsSnapshot(doc) ?? false}
                 />
               )}
 
@@ -494,7 +500,7 @@ export function App() {
       </div>
 
       <footer class="footer-bar">
-        <span>Lịch sử: Dukascopy · Realtime: Pyth Network / Binance</span>
+        <span>Lịch sử: Dukascopy · Realtime: Gold-API / FXRates / Binance</span>
         <span>
           {symbol} · Khung {timeframe} · {bars.length} nến
         </span>

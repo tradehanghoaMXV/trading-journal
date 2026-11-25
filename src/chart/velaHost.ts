@@ -409,7 +409,7 @@ export class VelaJournalHost {
         }
       };
 
-      // Enable EMA 9 and WMA 45 by default if none present
+      // Enable EMA 9, WMA 45, and RSI + EMA9 / WMA45 by default if none present
       chart.ready().then(() => {
         const present = chart.presentNativeIndicators();
         if (!present.includes('journal.ema9')) {
@@ -417,6 +417,11 @@ export class VelaJournalHost {
         }
         if (!present.includes('journal.wma45')) {
           chart.addNativeIndicator('journal.wma45', { inputs: { length: 45 } });
+        }
+        if (!present.includes('journal.rsi_ema_wma')) {
+          chart.addNativeIndicator('journal.rsi_ema_wma', {
+            inputs: { rsiLength: 14, emaLength: 9, wmaLength: 45 },
+          });
         }
         syncVolume();
         this.emitSnapshot(chart);

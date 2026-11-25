@@ -68,6 +68,38 @@ function formatShortTime(ts?: number): string {
   });
 }
 
+function pad2(n: number): string {
+  return String(n).padStart(2, '0');
+}
+
+function formatExactTimestamp(ts?: number): string {
+  if (!ts) return '';
+  const d = new Date(ts);
+  return `${pad2(d.getHours())}:${pad2(d.getMinutes())} · ${pad2(d.getDate())}/${pad2(
+    d.getMonth() + 1
+  )}/${d.getFullYear()}`;
+}
+
+function getLocalDateKey(ts: number): string {
+  const d = new Date(ts);
+  return `${d.getFullYear()}-${pad2(d.getMonth() + 1)}-${pad2(d.getDate())}`;
+}
+
+function formatDateGroupHeader(ts: number): string {
+  const d = new Date(ts);
+  const dateStr = `${pad2(d.getDate())}/${pad2(d.getMonth() + 1)}/${d.getFullYear()}`;
+  const now = new Date();
+  const todayKey = getLocalDateKey(now.getTime());
+  const yesterdayKey = getLocalDateKey(now.getTime() - 86_400_000);
+  const key = getLocalDateKey(ts);
+  if (key === todayKey) return `Hôm nay · ${dateStr}`;
+  if (key === yesterdayKey) return `Hôm qua · ${dateStr}`;
+  return dateStr;
+}
+
+type ModalViewMode = 'before' | 'after' | 'both';
+type TimeFilter = 'all' | 'today' | '7d' | '30d';
+
 export function TradesTab(props: TradesTabProps) {
   const defaultStrat = props.strategies[0];
   const [editingId, setEditingId] = useState<string | null>(null);
@@ -93,9 +125,17 @@ export function TradesTab(props: TradesTabProps) {
   const [drawingsSnapshot, setDrawingsSnapshot] = useState<unknown>(undefined);
 
   const [advancedOpen, setAdvancedOpen] = useState(false);
+  const [formCollapsed, setFormCollapsed] = useState(false);
   const [capturing, setCapturing] = useState(false);
   const [showAllSymbols, setShowAllSymbols] = useState(false);
-  const [compareTrade, setCompareTrade] = useState<Trade | null>(null);
+  const [sortOrder, setSortOrder] = useState<'desc' | 'asc'>('desc');
+  const [timeFilter, setTimeFilter] = useState<TimeFilter>('all');
+
+  const [viewerTrade, setViewerTrade] = useState<Trade | null>(null);
+  const [viewerMode, setViewerMode] = useState<ModalViewMode>('both');
+  const [viewerIsSaved, setViewerIsSaved] = useState<boolean>(true);
+  const [modalNotes, setModalNotes] = useState<string>('');
+  const [savingModalNotes, setSavingModalNotes] = useState<boolean>(false);
 
   const activeStrat =
     props.strategies.find((s) => s.id === strategyId) ?? props.strategies[0];
@@ -109,6 +149,7 @@ export function TradesTab(props: TradesTabProps) {
 
   useEffect(() => {
     if (props.seed) {
+      setFormCollapsed(false);
       setEditingId(props.seed.id ?? null);
       setSide(props.seed.side);
       setMode(props.seed.mode);
@@ -122,15 +163,68 @@ export function TradesTab(props: TradesTabProps) {
   }, [props.seed]);
 
   useEffect(() => {
-    if (!compareTrade) return;
+    if (!viewerTrade) return;
     const onKey = (e: KeyboardEvent) => {
-      if (e.key === 'Escape') setCompareTrade(null);
+      if (e.key === 'Escape') setViewerTrade(null);
     };
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
-  }, [compareTrade]);
+  }, [viewerTrade]);
+
+  const openViewer = (trade: Trade, initialMode: ModalViewMode, isSaved = true) => {
+    setViewerTrade(trade);
+    setViewerMode(initialMode);
+    setViewerIsSaved(isSaved);
+    setModalNotes(trade.notes || '');
+  };
+
+  const openFormPreviewViewer = (initialMode: 'before' | 'after') => {
+    const ep = Number(entryPrice) || 0;
+    const sl = Number(stopLoss) || 0;
+    const tp = Number(takeProfit) || 0;
+    const previewTrade: Trade = {
+      id: editingId ?? 'preview',
+      mode,
+      symbol: props.symbol,
+      timeframe: props.timeframe,
+      side,
+      entryTime,
+      entryPrice: ep,
+      stopLoss: sl,
+      takeProfit: tp,
+      strategyId: activeStrat?.id ?? 'ema9-wma45-trend',
+      checklist,
+      emotion,
+      mistakes,
+      notes,
+      rMultiple: computeRMultiple(side, ep, sl, undefined, tp),
+      status,
+      createdAt: entryTime,
+      beforeImage,
+      afterImage,
+      beforeCapturedAt,
+      afterCapturedAt,
+    };
+    openViewer(previewTrade, initialMode, false);
+  };
+
+  const handleSaveModalNotes = async () => {
+    if (!viewerTrade || !viewerIsSaved) return;
+    setSavingModalNotes(true);
+    try {
+      const updated: Trade = { ...viewerTrade, notes: modalNotes };
+      await props.onSaveTrade(updated);
+      setViewerTrade(updated);
+      if (editingId === updated.id) {
+        setNotes(modalNotes);
+      }
+    } finally {
+      setSavingModalNotes(false);
+    }
+  };
 
   const loadTradeIntoForm = (t: Trade) => {
+    setFormCollapsed(false);
     setEditingId(t.id);
     setSide(t.side);
     setMode(t.mode);
@@ -289,36 +383,83 @@ export function TradesTab(props: TradesTabProps) {
     resetForm();
   };
 
-  const visibleTrades = props.trades
+  const nowTs = Date.now();
+  const todayKey = getLocalDateKey(nowTs);
+  const filteredTrades = props.trades
     .filter((t) => (showAllSymbols ? true : t.symbol === props.symbol))
-    .sort((a, b) => b.createdAt - a.createdAt);
+    .filter((t) => {
+      if (timeFilter === 'all') return true;
+      const ts = t.entryTime || t.createdAt;
+      if (timeFilter === 'today') return getLocalDateKey(ts) === todayKey;
+      if (timeFilter === '7d') return ts >= nowTs - 7 * 86_400_000;
+      if (timeFilter === '30d') return ts >= nowTs - 30 * 86_400_000;
+      return true;
+    })
+    .sort((a, b) => {
+      const ta = a.entryTime || a.createdAt;
+      const tb = b.entryTime || b.createdAt;
+      return sortOrder === 'desc' ? tb - ta : ta - tb;
+    });
+
+  const groupedTrades: Array<{ key: string; label: string; items: Trade[] }> = [];
+  for (const t of filteredTrades.slice(0, 60)) {
+    const ts = t.entryTime || t.createdAt;
+    const key = getLocalDateKey(ts);
+    const lastGroup = groupedTrades[groupedTrades.length - 1];
+    if (lastGroup && lastGroup.key === key) {
+      lastGroup.items.push(t);
+    } else {
+      groupedTrades.push({
+        key,
+        label: formatDateGroupHeader(ts),
+        items: [t],
+      });
+    }
+  }
 
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: '10px' }}>
       <form class="card" onSubmit={handleSubmit} data-testid="trade-form">
-        <div class="card-title">
-          <span>{editingId ? 'Sửa lệnh' : `Ghi lệnh mới (${props.symbol})`}</span>
-          <div style={{ display: 'flex', gap: '4px' }}>
+        <div class="card-title" style={{ marginBottom: formCollapsed ? 0 : undefined }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
             <button
               type="button"
-              data-testid="side-long-btn"
-              class={`btn ${side === 'long' ? 'btn-bull' : ''}`}
-              style={{ padding: '3px 8px' }}
-              onClick={() => setSide('long')}
+              class="btn"
+              data-testid="toggle-form-collapse"
+              title={formCollapsed ? 'Mở rộng form ghi lệnh' : 'Thu gọn form để xem lịch sử'}
+              style={{ padding: '2px 5px', fontSize: '11px' }}
+              onClick={() => setFormCollapsed((v) => !v)}
             >
-              LONG
+              {formCollapsed ? <ChevronRight size={13} /> : <ChevronDown size={13} />}
             </button>
-            <button
-              type="button"
-              data-testid="side-short-btn"
-              class={`btn ${side === 'short' ? 'btn-bear' : ''}`}
-              style={{ padding: '3px 8px' }}
-              onClick={() => setSide('short')}
-            >
-              SHORT
-            </button>
+            <span>{editingId ? 'Sửa lệnh' : `Ghi lệnh mới (${props.symbol})`}</span>
           </div>
+          {!formCollapsed && (
+            <div style={{ display: 'flex', gap: '4px' }}>
+              <button
+                type="button"
+                data-testid="side-long-btn"
+                class={`btn ${side === 'long' ? 'btn-bull' : ''}`}
+                style={{ padding: '3px 8px' }}
+                onClick={() => setSide('long')}
+              >
+                LONG
+              </button>
+              <button
+                type="button"
+                data-testid="side-short-btn"
+                class={`btn ${side === 'short' ? 'btn-bear' : ''}`}
+                style={{ padding: '3px 8px' }}
+                onClick={() => setSide('short')}
+              >
+                SHORT
+              </button>
+            </div>
+          )}
         </div>
+
+        {!formCollapsed && (
+          <>
 
         {/* 1 compact row: Entry, SL, TP */}
         <div class="grid-3" style={{ marginBottom: '8px' }}>
@@ -473,7 +614,9 @@ export function TradesTab(props: TradesTabProps) {
                   src={beforeImage}
                   data-testid="form-before-preview"
                   alt="Ảnh chart Trước"
-                  style={{ width: '100%', height: '72px', objectFit: 'cover', display: 'block' }}
+                  title="Bấm để phóng to ảnh Trước"
+                  onClick={() => openFormPreviewViewer('before')}
+                  style={{ width: '100%', height: '72px', objectFit: 'cover', display: 'block', cursor: 'pointer' }}
                 />
               ) : (
                 <div
@@ -541,7 +684,9 @@ export function TradesTab(props: TradesTabProps) {
                   src={afterImage}
                   data-testid="form-after-preview"
                   alt="Ảnh chart Sau"
-                  style={{ width: '100%', height: '72px', objectFit: 'cover', display: 'block' }}
+                  title="Bấm để phóng to ảnh Sau"
+                  onClick={() => openFormPreviewViewer('after')}
+                  style={{ width: '100%', height: '72px', objectFit: 'cover', display: 'block', cursor: 'pointer' }}
                 />
               ) : (
                 <div
@@ -733,265 +878,342 @@ export function TradesTab(props: TradesTabProps) {
             </button>
           )}
         </div>
+          </>
+        )}
       </form>
 
-      {/* Trade list */}
-      <div class="card">
-        <div class="card-title">
-          <span>Danh sách lệnh ({visibleTrades.length})</span>
-          <label style={{ fontSize: '11px', fontWeight: 400, color: '#94a3b8', cursor: 'pointer' }}>
-            <input
-              type="checkbox"
-              checked={showAllSymbols}
-              onChange={(e) => setShowAllSymbols((e.target as HTMLInputElement).checked)}
-            />{' '}
-            Tất cả mã
-          </label>
+      {/* Chronological Trade List */}
+      <div class="card" data-testid="trades-timeline">
+        <div class="card-title" style={{ flexWrap: 'wrap', gap: '6px' }}>
+          <span>Danh sách lệnh ({filteredTrades.length})</span>
+          <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+            <button
+              type="button"
+              class="btn"
+              data-testid="sort-order-btn"
+              style={{ padding: '2px 7px', fontSize: '10.5px' }}
+              onClick={() => setSortOrder((o) => (o === 'desc' ? 'asc' : 'desc'))}
+            >
+              {sortOrder === 'desc' ? 'Mới nhất ↓' : 'Cũ nhất ↑'}
+            </button>
+            <label style={{ fontSize: '11px', fontWeight: 400, color: '#94a3b8', cursor: 'pointer', display: 'flex', alignItems: 'center', gap: '4px' }}>
+              <input
+                type="checkbox"
+                checked={showAllSymbols}
+                onChange={(e) => setShowAllSymbols((e.target as HTMLInputElement).checked)}
+              />
+              Tất cả mã
+            </label>
+          </div>
         </div>
 
-        {visibleTrades.length === 0 ? (
+        {/* Quick time filter bar */}
+        <div
+          style={{
+            display: 'flex',
+            flexWrap: 'wrap',
+            gap: '4px',
+            marginBottom: '10px',
+          }}
+        >
+          {(
+            [
+              { id: 'all', label: 'Tất cả thời gian' },
+              { id: 'today', label: 'Hôm nay' },
+              { id: '7d', label: '7 ngày' },
+              { id: '30d', label: '30 ngày' },
+            ] as const
+          ).map((f) => (
+            <button
+              key={f.id}
+              type="button"
+              data-testid={`filter-time-${f.id}`}
+              class={`btn ${timeFilter === f.id ? 'btn-primary' : ''}`}
+              style={{ padding: '3px 8px', fontSize: '10.5px' }}
+              onClick={() => setTimeFilter(f.id)}
+            >
+              {f.label}
+            </button>
+          ))}
+        </div>
+
+        {groupedTrades.length === 0 ? (
           <div style={{ color: '#94a3b8', fontSize: '12px' }}>
-            Chưa có lệnh nào. Chọn công cụ Long/Short ở thanh trái hoặc điền form trên.
+            Chưa có lệnh nào phù hợp bộ lọc. Chọn công cụ Long/Short ở thanh trái hoặc điền form trên.
           </div>
         ) : (
-          <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
-            {visibleTrades.slice(0, 40).map((t) => (
-              <div
-                key={t.id}
-                data-testid={`trade-item-${t.id}`}
-                onClick={() => loadTradeIntoForm(t)}
-                style={{
-                  padding: '8px',
-                  borderRadius: '6px',
-                  background: '#0b0f17',
-                  border:
-                    props.selectedTradeId === t.id
-                      ? '1px solid #38bdf8'
-                      : '1px solid #1e293b',
-                  cursor: 'pointer',
-                  display: 'flex',
-                  flexDirection: 'column',
-                  gap: '6px',
-                }}
-              >
-                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-                  <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
-                    <span class={`pill ${t.side === 'long' ? 'pill-bull' : 'pill-bear'}`}>
-                      {t.side.toUpperCase()}
-                    </span>
-                    <strong>{t.symbol}</strong>
-                    <span style={{ color: '#94a3b8', fontSize: '11px' }}>
-                      {t.timeframe} · {t.mode}
-                    </span>
-                  </div>
-                  <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
-                    <span
-                      style={{
-                        fontWeight: 700,
-                        color: t.rMultiple >= 0 ? '#00F59B' : '#FF3B5C',
-                      }}
+          <div style={{ display: 'flex', flexDirection: 'column', gap: '12px' }}>
+            {groupedTrades.map((group) => (
+              <div key={group.key} data-testid={`date-group-${group.key}`} style={{ display: 'flex', flexDirection: 'column', gap: '6px' }}>
+                <div
+                  data-testid="date-group-header"
+                  style={{
+                    display: 'flex',
+                    alignItems: 'center',
+                    justifyContent: 'space-between',
+                    padding: '4px 8px',
+                    borderRadius: '4px',
+                    background: '#131f33',
+                    borderLeft: '3px solid #38bdf8',
+                    fontSize: '11px',
+                    fontWeight: 700,
+                    color: '#e2e8f0',
+                  }}
+                >
+                  <span>{group.label}</span>
+                  <span style={{ color: '#94a3b8', fontWeight: 500 }}>{group.items.length} lệnh</span>
+                </div>
+
+                {group.items.map((t) => (
+                  <div
+                    key={t.id}
+                    data-testid={`trade-item-${t.id}`}
+                    onClick={() => loadTradeIntoForm(t)}
+                    style={{
+                      padding: '8px',
+                      borderRadius: '6px',
+                      background: '#0b0f17',
+                      border:
+                        props.selectedTradeId === t.id
+                          ? '1px solid #38bdf8'
+                          : '1px solid #1e293b',
+                      cursor: 'pointer',
+                      display: 'flex',
+                      flexDirection: 'column',
+                      gap: '6px',
+                    }}
+                  >
+                    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: '6px' }}>
+                      <div style={{ display: 'flex', alignItems: 'center', gap: '6px', flexWrap: 'wrap' }}>
+                        <span class={`pill ${t.side === 'long' ? 'pill-bull' : 'pill-bear'}`}>
+                          {t.side.toUpperCase()}
+                        </span>
+                        <strong>{t.symbol}</strong>
+                        <span style={{ color: '#94a3b8', fontSize: '11px' }}>
+                          {t.timeframe} · {t.mode}
+                        </span>
+                      </div>
+                      <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
+                        <span
+                          style={{
+                            fontWeight: 700,
+                            color: t.rMultiple >= 0 ? '#00F59B' : '#FF3B5C',
+                          }}
+                        >
+                          {t.status === 'closed'
+                            ? `${t.rMultiple >= 0 ? '+' : ''}${t.rMultiple}R`
+                            : `Mục tiêu ${t.rMultiple}R`}
+                        </span>
+                        {t.status === 'open' && props.lastPrice !== null && t.symbol === props.symbol && (
+                          <button
+                            type="button"
+                            class="btn"
+                            title="Đóng lệnh ở giá hiện tại"
+                            style={{ padding: '2px 5px' }}
+                            onClick={(ev) => {
+                              ev.stopPropagation();
+                              const exitP = props.lastPrice!;
+                              props.onSaveTrade({
+                                ...t,
+                                status: 'closed',
+                                exitPrice: exitP,
+                                exitTime: Date.now(),
+                                rMultiple: computeRMultiple(
+                                  t.side,
+                                  t.entryPrice,
+                                  t.stopLoss,
+                                  exitP,
+                                  t.takeProfit
+                                ),
+                              });
+                            }}
+                          >
+                            <CheckCircle2 size={12} color="#00F59B" />
+                          </button>
+                        )}
+                        <button
+                          type="button"
+                          class="btn"
+                          style={{ padding: '2px 5px' }}
+                          onClick={(ev) => {
+                            ev.stopPropagation();
+                            props.onDeleteTrade(t.id);
+                          }}
+                        >
+                          <Trash2 size={12} color="#FF3B5C" />
+                        </button>
+                      </div>
+                    </div>
+
+                    <div
+                      data-testid={`trade-time-${t.id}`}
+                      style={{ fontSize: '10.5px', color: '#38bdf8', fontWeight: 500 }}
                     >
-                      {t.status === 'closed'
-                        ? `${t.rMultiple >= 0 ? '+' : ''}${t.rMultiple}R`
-                        : `Mục tiêu ${t.rMultiple}R`}
-                    </span>
-                    {t.status === 'open' && props.lastPrice !== null && t.symbol === props.symbol && (
+                      {formatExactTimestamp(t.entryTime || t.createdAt)}
+                    </div>
+
+                    <div style={{ fontSize: '11px', color: '#94a3b8' }}>
+                      Vào: {formatPrice(t.entryPrice, t.symbol)} · SL: {formatPrice(t.stopLoss, t.symbol)} · TP:{' '}
+                      {formatPrice(t.takeProfit, t.symbol)}
+                    </div>
+
+                    {t.notes && (
+                      <div
+                        style={{
+                          fontSize: '11.5px',
+                          color: '#cbd5e1',
+                          whiteSpace: 'pre-wrap',
+                          display: '-webkit-box',
+                          WebkitLineClamp: 2,
+                          WebkitBoxOrient: 'vertical',
+                          overflow: 'hidden',
+                        }}
+                      >
+                        {t.notes}
+                      </div>
+                    )}
+
+                    {/* Side-by-side Before & After thumbnails */}
+                    {(t.beforeImage || t.afterImage) && (
+                      <div class="grid-2" style={{ gap: '6px' }}>
+                        <div
+                          data-testid={`thumb-before-${t.id}`}
+                          title="Bấm để xem ảnh Trước + Ghi chú"
+                          onClick={(ev) => {
+                            ev.stopPropagation();
+                            openViewer(t, 'before', true);
+                          }}
+                          style={{
+                            borderRadius: '4px',
+                            overflow: 'hidden',
+                            border: '1px solid #1e293b',
+                            background: '#0f1623',
+                            position: 'relative',
+                          }}
+                        >
+                          <div
+                            style={{
+                              fontSize: '9.5px',
+                              padding: '2px 5px',
+                              background: 'rgba(11,15,23,0.85)',
+                              color: '#38bdf8',
+                              fontWeight: 600,
+                            }}
+                          >
+                            Trước
+                          </div>
+                          {t.beforeImage ? (
+                            <img
+                              src={t.beforeImage}
+                              alt="Trước"
+                              style={{ width: '100%', height: '58px', objectFit: 'cover', display: 'block' }}
+                            />
+                          ) : (
+                            <div style={{ height: '58px', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: '10px', color: '#64748b' }}>
+                              Chưa có
+                            </div>
+                          )}
+                        </div>
+
+                        <div
+                          data-testid={`thumb-after-${t.id}`}
+                          title="Bấm để xem ảnh Sau + Ghi chú"
+                          onClick={(ev) => {
+                            ev.stopPropagation();
+                            openViewer(t, 'after', true);
+                          }}
+                          style={{
+                            borderRadius: '4px',
+                            overflow: 'hidden',
+                            border: '1px solid #1e293b',
+                            background: '#0f1623',
+                            position: 'relative',
+                          }}
+                        >
+                          <div
+                            style={{
+                              fontSize: '9.5px',
+                              padding: '2px 5px',
+                              background: 'rgba(11,15,23,0.85)',
+                              color: '#00F59B',
+                              fontWeight: 600,
+                            }}
+                          >
+                            Sau
+                          </div>
+                          {t.afterImage ? (
+                            <img
+                              src={t.afterImage}
+                              alt="Sau"
+                              style={{ width: '100%', height: '58px', objectFit: 'cover', display: 'block' }}
+                            />
+                          ) : (
+                            <div style={{ height: '58px', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: '10px', color: '#64748b' }}>
+                              Chưa chụp
+                            </div>
+                          )}
+                        </div>
+                      </div>
+                    )}
+
+                    {/* Quick actions: Update After image, Compare, Restore drawings */}
+                    <div style={{ display: 'flex', flexWrap: 'wrap', gap: '4px' }}>
                       <button
                         type="button"
                         class="btn"
-                        title="Đóng lệnh ở giá hiện tại"
-                        style={{ padding: '2px 5px' }}
+                        data-testid={`capture-after-${t.id}`}
+                        style={{ padding: '3px 7px', fontSize: '10.5px' }}
                         onClick={(ev) => {
                           ev.stopPropagation();
-                          const exitP = props.lastPrice!;
-                          props.onSaveTrade({
-                            ...t,
-                            status: 'closed',
-                            exitPrice: exitP,
-                            exitTime: Date.now(),
-                            rMultiple: computeRMultiple(
-                              t.side,
-                              t.entryPrice,
-                              t.stopLoss,
-                              exitP,
-                              t.takeProfit
-                            ),
-                          });
+                          handleCaptureAfterOnTrade(t);
                         }}
                       >
-                        <CheckCircle2 size={12} color="#00F59B" />
+                        <Camera size={11} /> Cập nhật ảnh Sau
                       </button>
-                    )}
-                    <button
-                      type="button"
-                      class="btn"
-                      style={{ padding: '2px 5px' }}
-                      onClick={(ev) => {
-                        ev.stopPropagation();
-                        props.onDeleteTrade(t.id);
-                      }}
-                    >
-                      <Trash2 size={12} color="#FF3B5C" />
-                    </button>
-                  </div>
-                </div>
 
-                <div style={{ fontSize: '11px', color: '#94a3b8' }}>
-                  Vào: {formatPrice(t.entryPrice, t.symbol)} · SL: {formatPrice(t.stopLoss, t.symbol)} · TP:{' '}
-                  {formatPrice(t.takeProfit, t.symbol)}
-                </div>
-
-                {t.notes && (
-                  <div
-                    style={{
-                      fontSize: '11.5px',
-                      color: '#cbd5e1',
-                      whiteSpace: 'pre-wrap',
-                      display: '-webkit-box',
-                      WebkitLineClamp: 2,
-                      WebkitBoxOrient: 'vertical',
-                      overflow: 'hidden',
-                    }}
-                  >
-                    {t.notes}
-                  </div>
-                )}
-
-                {/* Side-by-side Before & After thumbnails */}
-                {(t.beforeImage || t.afterImage) && (
-                  <div class="grid-2" style={{ gap: '6px' }}>
-                    <div
-                      data-testid={`thumb-before-${t.id}`}
-                      onClick={(ev) => {
-                        ev.stopPropagation();
-                        setCompareTrade(t);
-                      }}
-                      style={{
-                        borderRadius: '4px',
-                        overflow: 'hidden',
-                        border: '1px solid #1e293b',
-                        background: '#0f1623',
-                        position: 'relative',
-                      }}
-                    >
-                      <div
-                        style={{
-                          fontSize: '9.5px',
-                          padding: '2px 5px',
-                          background: 'rgba(11,15,23,0.85)',
-                          color: '#94a3b8',
-                        }}
-                      >
-                        Trước
-                      </div>
-                      {t.beforeImage ? (
-                        <img
-                          src={t.beforeImage}
-                          alt="Trước"
-                          style={{ width: '100%', height: '58px', objectFit: 'cover', display: 'block' }}
-                        />
-                      ) : (
-                        <div style={{ height: '58px', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: '10px', color: '#64748b' }}>
-                          Chưa có
-                        </div>
+                      {(t.beforeImage || t.afterImage) && (
+                        <button
+                          type="button"
+                          class="btn"
+                          data-testid={`compare-btn-${t.id}`}
+                          style={{ padding: '3px 7px', fontSize: '10.5px' }}
+                          onClick={(ev) => {
+                            ev.stopPropagation();
+                            openViewer(t, 'both', true);
+                          }}
+                        >
+                          <Columns2 size={11} /> So sánh Trước / Sau
+                        </button>
                       )}
-                    </div>
 
-                    <div
-                      data-testid={`thumb-after-${t.id}`}
-                      onClick={(ev) => {
-                        ev.stopPropagation();
-                        setCompareTrade(t);
-                      }}
-                      style={{
-                        borderRadius: '4px',
-                        overflow: 'hidden',
-                        border: '1px solid #1e293b',
-                        background: '#0f1623',
-                        position: 'relative',
-                      }}
-                    >
-                      <div
-                        style={{
-                          fontSize: '9.5px',
-                          padding: '2px 5px',
-                          background: 'rgba(11,15,23,0.85)',
-                          color: '#94a3b8',
-                        }}
-                      >
-                        Sau
-                      </div>
-                      {t.afterImage ? (
-                        <img
-                          src={t.afterImage}
-                          alt="Sau"
-                          style={{ width: '100%', height: '58px', objectFit: 'cover', display: 'block' }}
-                        />
-                      ) : (
-                        <div style={{ height: '58px', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: '10px', color: '#64748b' }}>
-                          Chưa chụp
-                        </div>
+                      {Boolean(t.drawingsSnapshot) && (
+                        <button
+                          type="button"
+                          class="btn"
+                          data-testid={`restore-drawings-${t.id}`}
+                          style={{ padding: '3px 7px', fontSize: '10.5px' }}
+                          onClick={(ev) => {
+                            ev.stopPropagation();
+                            props.onRestoreDrawings(t.drawingsSnapshot);
+                          }}
+                        >
+                          <PenLine size={11} /> Khôi phục nét vẽ
+                        </button>
                       )}
                     </div>
                   </div>
-                )}
-
-                {/* Quick actions: Update After image, Compare, Restore drawings */}
-                <div style={{ display: 'flex', flexWrap: 'wrap', gap: '4px' }}>
-                  <button
-                    type="button"
-                    class="btn"
-                    data-testid={`capture-after-${t.id}`}
-                    style={{ padding: '3px 7px', fontSize: '10.5px' }}
-                    onClick={(ev) => {
-                      ev.stopPropagation();
-                      handleCaptureAfterOnTrade(t);
-                    }}
-                  >
-                    <Camera size={11} /> Cập nhật ảnh Sau
-                  </button>
-
-                  {(t.beforeImage || t.afterImage) && (
-                    <button
-                      type="button"
-                      class="btn"
-                      data-testid={`compare-btn-${t.id}`}
-                      style={{ padding: '3px 7px', fontSize: '10.5px' }}
-                      onClick={(ev) => {
-                        ev.stopPropagation();
-                        setCompareTrade(t);
-                      }}
-                    >
-                      <Columns2 size={11} /> So sánh Trước / Sau
-                    </button>
-                  )}
-
-                  {Boolean(t.drawingsSnapshot) && (
-                    <button
-                      type="button"
-                      class="btn"
-                      data-testid={`restore-drawings-${t.id}`}
-                      style={{ padding: '3px 7px', fontSize: '10.5px' }}
-                      onClick={(ev) => {
-                        ev.stopPropagation();
-                        props.onRestoreDrawings(t.drawingsSnapshot);
-                      }}
-                    >
-                      <PenLine size={11} /> Khôi phục nét vẽ
-                    </button>
-                  )}
-                </div>
+                ))}
               </div>
             ))}
           </div>
         )}
       </div>
 
-      {/* Full-screen Before / After Lightbox Modal */}
-      {compareTrade && (
+      {/* Image + Note Viewer Modal (Single Before, Single After, or Side-by-Side Both) */}
+      {viewerTrade && (
         <div
           data-testid="compare-modal"
-          onClick={() => setCompareTrade(null)}
+          onClick={() => setViewerTrade(null)}
           style={{
             position: 'fixed',
             inset: 0,
@@ -1007,7 +1229,7 @@ export function TradesTab(props: TradesTabProps) {
             onClick={(ev) => ev.stopPropagation()}
             style={{
               width: '100%',
-              maxWidth: '1240px',
+              maxWidth: viewerMode === 'both' ? '1280px' : '980px',
               maxHeight: '92vh',
               background: '#0f1623',
               border: '1px solid #2b3c58',
@@ -1026,37 +1248,72 @@ export function TradesTab(props: TradesTabProps) {
                 padding: '10px 14px',
                 background: '#131f33',
                 borderBottom: '1px solid #2b3c58',
+                gap: '10px',
+                flexWrap: 'wrap',
               }}
             >
-              <div style={{ display: 'flex', alignItems: 'center', gap: '10px', flexWrap: 'wrap' }}>
-                <span class={`pill ${compareTrade.side === 'long' ? 'pill-bull' : 'pill-bear'}`}>
-                  {compareTrade.side.toUpperCase()}
+              <div style={{ display: 'flex', alignItems: 'center', gap: '8px', flexWrap: 'wrap' }}>
+                <span class={`pill ${viewerTrade.side === 'long' ? 'pill-bull' : 'pill-bear'}`}>
+                  {viewerTrade.side.toUpperCase()}
                 </span>
-                <strong style={{ fontSize: '14px' }}>{compareTrade.symbol}</strong>
+                <strong style={{ fontSize: '14px' }}>{viewerTrade.symbol}</strong>
                 <span style={{ color: '#94a3b8', fontSize: '12px' }}>
-                  Khung {compareTrade.timeframe} · Vào {formatPrice(compareTrade.entryPrice, compareTrade.symbol)} · SL{' '}
-                  {formatPrice(compareTrade.stopLoss, compareTrade.symbol)} · TP{' '}
-                  {formatPrice(compareTrade.takeProfit, compareTrade.symbol)}
+                  {viewerTrade.timeframe} · {formatExactTimestamp(viewerTrade.entryTime || viewerTrade.createdAt)}
+                </span>
+                <span style={{ color: '#cbd5e1', fontSize: '12px' }}>
+                  Vào {formatPrice(viewerTrade.entryPrice, viewerTrade.symbol)} · SL{' '}
+                  {formatPrice(viewerTrade.stopLoss, viewerTrade.symbol)} · TP{' '}
+                  {formatPrice(viewerTrade.takeProfit, viewerTrade.symbol)}
                 </span>
                 <span
                   style={{
                     fontWeight: 700,
-                    color: compareTrade.rMultiple >= 0 ? '#00F59B' : '#FF3B5C',
+                    color: viewerTrade.rMultiple >= 0 ? '#00F59B' : '#FF3B5C',
                   }}
                 >
-                  {compareTrade.status === 'closed'
-                    ? `${compareTrade.rMultiple >= 0 ? '+' : ''}${compareTrade.rMultiple}R`
-                    : `Mục tiêu ${compareTrade.rMultiple}R`}
+                  {viewerTrade.status === 'closed'
+                    ? `${viewerTrade.rMultiple >= 0 ? '+' : ''}${viewerTrade.rMultiple}R`
+                    : `Mục tiêu ${viewerTrade.rMultiple}R`}
                 </span>
               </div>
-              <button
-                type="button"
-                class="btn"
-                data-testid="close-compare-modal"
-                onClick={() => setCompareTrade(null)}
-              >
-                <X size={14} /> Đóng
-              </button>
+
+              <div style={{ display: 'flex', alignItems: 'center', gap: '6px', flexWrap: 'wrap' }}>
+                <button
+                  type="button"
+                  data-testid="modal-mode-before"
+                  class={`btn ${viewerMode === 'before' ? 'btn-primary' : ''}`}
+                  style={{ padding: '4px 10px', fontSize: '11.5px' }}
+                  onClick={() => setViewerMode('before')}
+                >
+                  Ảnh Trước
+                </button>
+                <button
+                  type="button"
+                  data-testid="modal-mode-after"
+                  class={`btn ${viewerMode === 'after' ? 'btn-primary' : ''}`}
+                  style={{ padding: '4px 10px', fontSize: '11.5px' }}
+                  onClick={() => setViewerMode('after')}
+                >
+                  Ảnh Sau
+                </button>
+                <button
+                  type="button"
+                  data-testid="modal-mode-both"
+                  class={`btn ${viewerMode === 'both' ? 'btn-primary' : ''}`}
+                  style={{ padding: '4px 10px', fontSize: '11.5px' }}
+                  onClick={() => setViewerMode('both')}
+                >
+                  Cả 2 ảnh (Trước & Sau)
+                </button>
+                <button
+                  type="button"
+                  class="btn"
+                  data-testid="close-compare-modal"
+                  onClick={() => setViewerTrade(null)}
+                >
+                  <X size={14} /> Đóng
+                </button>
+              </div>
             </div>
 
             <div
@@ -1068,118 +1325,172 @@ export function TradesTab(props: TradesTabProps) {
                 gap: '12px',
               }}
             >
-              <div class="grid-2" style={{ gap: '12px' }}>
-                <div
-                  style={{
-                    background: '#0b0f17',
-                    border: '1px solid #1e293b',
-                    borderRadius: '8px',
-                    overflow: 'hidden',
-                  }}
-                >
+              <div
+                class={viewerMode === 'both' ? 'grid-2' : undefined}
+                style={
+                  viewerMode === 'both'
+                    ? { gap: '12px' }
+                    : { display: 'flex', flexDirection: 'column', gap: '12px' }
+                }
+              >
+                {(viewerMode === 'before' || viewerMode === 'both') && (
                   <div
+                    data-testid="modal-before-pane"
                     style={{
-                      padding: '6px 10px',
-                      borderBottom: '1px solid #1e293b',
-                      fontSize: '12px',
-                      fontWeight: 600,
-                      color: '#38bdf8',
-                      display: 'flex',
-                      justifyContent: 'space-between',
+                      background: '#0b0f17',
+                      border: '1px solid #1e293b',
+                      borderRadius: '8px',
+                      overflow: 'hidden',
                     }}
                   >
-                    <span>TRƯỚC KHI VÀO / LÚC GHI LỆNH</span>
-                    <span style={{ color: '#94a3b8', fontWeight: 400 }}>
-                      {formatShortTime(compareTrade.beforeCapturedAt)}
-                    </span>
-                  </div>
-                  {compareTrade.beforeImage ? (
-                    <img
-                      src={compareTrade.beforeImage}
-                      data-testid="modal-before-img"
-                      alt="Chart Trước"
-                      style={{ width: '100%', maxHeight: '58vh', objectFit: 'contain', display: 'block' }}
-                    />
-                  ) : (
                     <div
                       style={{
-                        height: '240px',
+                        padding: '6px 10px',
+                        borderBottom: '1px solid #1e293b',
+                        fontSize: '12px',
+                        fontWeight: 600,
+                        color: '#38bdf8',
                         display: 'flex',
-                        alignItems: 'center',
-                        justifyContent: 'center',
-                        color: '#64748b',
+                        justifyContent: 'space-between',
                       }}
                     >
-                      Chưa có ảnh Trước
+                      <span>TRƯỚC KHI VÀO / LÚC GHI LỆNH</span>
+                      <span style={{ color: '#94a3b8', fontWeight: 400 }}>
+                        {formatShortTime(viewerTrade.beforeCapturedAt)}
+                      </span>
                     </div>
-                  )}
-                </div>
+                    {viewerTrade.beforeImage ? (
+                      <img
+                        src={viewerTrade.beforeImage}
+                        data-testid="modal-before-img"
+                        alt="Chart Trước"
+                        style={{
+                          width: '100%',
+                          maxHeight: viewerMode === 'both' ? '54vh' : '62vh',
+                          objectFit: 'contain',
+                          display: 'block',
+                        }}
+                      />
+                    ) : (
+                      <div
+                        style={{
+                          height: '240px',
+                          display: 'flex',
+                          alignItems: 'center',
+                          justifyContent: 'center',
+                          color: '#64748b',
+                        }}
+                      >
+                        Chưa có ảnh Trước
+                      </div>
+                    )}
+                  </div>
+                )}
 
-                <div
-                  style={{
-                    background: '#0b0f17',
-                    border: '1px solid #1e293b',
-                    borderRadius: '8px',
-                    overflow: 'hidden',
-                  }}
-                >
+                {(viewerMode === 'after' || viewerMode === 'both') && (
                   <div
+                    data-testid="modal-after-pane"
                     style={{
-                      padding: '6px 10px',
-                      borderBottom: '1px solid #1e293b',
-                      fontSize: '12px',
-                      fontWeight: 600,
-                      color: '#00F59B',
-                      display: 'flex',
-                      justifyContent: 'space-between',
+                      background: '#0b0f17',
+                      border: '1px solid #1e293b',
+                      borderRadius: '8px',
+                      overflow: 'hidden',
                     }}
                   >
-                    <span>SAU KHI DIỄN BIẾN / ĐÓNG LỆNH</span>
-                    <span style={{ color: '#94a3b8', fontWeight: 400 }}>
-                      {formatShortTime(compareTrade.afterCapturedAt)}
-                    </span>
-                  </div>
-                  {compareTrade.afterImage ? (
-                    <img
-                      src={compareTrade.afterImage}
-                      data-testid="modal-after-img"
-                      alt="Chart Sau"
-                      style={{ width: '100%', maxHeight: '58vh', objectFit: 'contain', display: 'block' }}
-                    />
-                  ) : (
                     <div
                       style={{
-                        height: '240px',
+                        padding: '6px 10px',
+                        borderBottom: '1px solid #1e293b',
+                        fontSize: '12px',
+                        fontWeight: 600,
+                        color: '#00F59B',
                         display: 'flex',
-                        alignItems: 'center',
-                        justifyContent: 'center',
-                        color: '#64748b',
+                        justifyContent: 'space-between',
                       }}
                     >
-                      Chưa có ảnh Sau
+                      <span>SAU KHI DIỄN BIẾN / ĐÓNG LỆNH</span>
+                      <span style={{ color: '#94a3b8', fontWeight: 400 }}>
+                        {formatShortTime(viewerTrade.afterCapturedAt)}
+                      </span>
                     </div>
-                  )}
-                </div>
+                    {viewerTrade.afterImage ? (
+                      <img
+                        src={viewerTrade.afterImage}
+                        data-testid="modal-after-img"
+                        alt="Chart Sau"
+                        style={{
+                          width: '100%',
+                          maxHeight: viewerMode === 'both' ? '54vh' : '62vh',
+                          objectFit: 'contain',
+                          display: 'block',
+                        }}
+                      />
+                    ) : (
+                      <div
+                        style={{
+                          height: '240px',
+                          display: 'flex',
+                          alignItems: 'center',
+                          justifyContent: 'center',
+                          color: '#64748b',
+                        }}
+                      >
+                        Chưa có ảnh Sau
+                      </div>
+                    )}
+                  </div>
+                )}
               </div>
 
-              {compareTrade.notes && (
+              {/* Ghi chú lệnh (with inline edit & save for saved trades) */}
+              <div
+                data-testid="modal-notes-section"
+                style={{
+                  padding: '10px 12px',
+                  borderRadius: '8px',
+                  background: '#0b0f17',
+                  border: '1px solid #1e293b',
+                  fontSize: '12.5px',
+                  color: '#e2e8f0',
+                }}
+              >
                 <div
                   style={{
-                    padding: '10px 12px',
-                    borderRadius: '8px',
-                    background: '#0b0f17',
-                    border: '1px solid #1e293b',
-                    fontSize: '12.5px',
-                    color: '#e2e8f0',
-                    whiteSpace: 'pre-wrap',
+                    display: 'flex',
+                    alignItems: 'center',
+                    justifyContent: 'space-between',
+                    marginBottom: '6px',
                   }}
                 >
-                  <strong style={{ color: '#94a3b8', display: 'block', marginBottom: '4px', fontSize: '11px' }}>
-                    GHI CHÚ LỆNH
-                  </strong>
-                  {compareTrade.notes}
+                  <strong style={{ color: '#94a3b8', fontSize: '11px' }}>GHI CHÚ LỆNH</strong>
+                  {viewerIsSaved && (
+                    <button
+                      type="button"
+                      class="btn btn-primary"
+                      data-testid="modal-save-notes-btn"
+                      disabled={savingModalNotes || modalNotes === (viewerTrade.notes || '')}
+                      style={{ padding: '3px 10px', fontSize: '11px' }}
+                      onClick={handleSaveModalNotes}
+                    >
+                      {savingModalNotes ? 'Đang lưu...' : 'Lưu ghi chú'}
+                    </button>
+                  )}
                 </div>
-              )}
+                {viewerIsSaved ? (
+                  <textarea
+                    class="textarea"
+                    data-testid="modal-notes-input"
+                    style={{ width: '100%', minHeight: '64px', resize: 'vertical' }}
+                    placeholder="Nhập hoặc cập nhật ghi chú lệnh..."
+                    value={modalNotes}
+                    onInput={(e) => setModalNotes((e.target as HTMLTextAreaElement).value)}
+                  />
+                ) : (
+                  <div style={{ whiteSpace: 'pre-wrap', color: viewerTrade.notes ? '#e2e8f0' : '#64748b' }}>
+                    {viewerTrade.notes || 'Chưa có ghi chú'}
+                  </div>
+                )}
+              </div>
             </div>
           </div>
         </div>

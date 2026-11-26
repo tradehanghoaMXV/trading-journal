@@ -434,6 +434,55 @@ body,
   color: var(--text-muted);
 }
 
+.footer-left {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  position: relative;
+}
+
+.status-mt5 {
+  color: #00f59b;
+  font-weight: 600;
+}
+
+.status-fallback-wrap {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  position: relative;
+}
+
+.footer-link-btn {
+  background: transparent;
+  border: none;
+  color: #38bdf8;
+  font-size: 11px;
+  cursor: pointer;
+  padding: 0;
+  font-family: inherit;
+}
+
+.footer-link-btn:hover {
+  text-decoration: underline;
+}
+
+.mt5-tooltip {
+  position: absolute;
+  bottom: 24px;
+  left: 0;
+  z-index: 60;
+  background: #131f33;
+  border: 1px solid #2b3c58;
+  border-radius: 6px;
+  padding: 6px 10px;
+  color: #e2e8f0;
+  font-size: 11px;
+  line-height: 1.4;
+  white-space: nowrap;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.45);
+}
+
 ::-webkit-scrollbar {
   width: 6px;
   height: 6px;

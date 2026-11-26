@@ -20,6 +20,7 @@ import { StrategiesTab } from './components/StrategiesTab';
 import { BacktestTab } from './components/BacktestTab';
 import { DataTab } from './components/DataTab';
 import { SYMBOL_MAP } from './config/symbols';
+import type { FxDataSourceStatus } from './providers/dukascopyPythProvider';
 
 const DEFAULT_REPLAY: ReplayState = {
   active: false,
@@ -53,6 +54,8 @@ export function App() {
   const [selectedTradeId, setSelectedTradeId] = useState<string | null>(null);
   const [tradeSeed, setTradeSeed] = useState<TradeFormSeed | null>(null);
   const [noteSeed, setNoteSeed] = useState<NoteFormSeed | null>(null);
+  const [fxStatus, setFxStatus] = useState<FxDataSourceStatus>({ mode: 'fallback' });
+  const [mt5Hint, setMt5Hint] = useState(false);
 
   const toolRef = useRef<ActiveTool>(activeTool);
   toolRef.current = activeTool;
@@ -198,7 +201,11 @@ export function App() {
       },
     });
 
+    const unsubStatus = host.dukascopyProvider.onStatusChange(setFxStatus);
+    host.dukascopyProvider.probeMt5();
+
     return () => {
+      unsubStatus();
       host.destroy();
       hostRef.current = null;
     };
@@ -237,6 +244,16 @@ export function App() {
       setReplay(DEFAULT_REPLAY);
     } else {
       setReplayBarOpen(true);
+    }
+  };
+
+  const handleRetryMt5 = async () => {
+    const ok = await hostRef.current?.dukascopyProvider.probeMt5(true);
+    if (ok) {
+      setMt5Hint(false);
+      await hostRef.current?.reloadMarket();
+    } else {
+      setMt5Hint((v) => !v);
     }
   };
 
@@ -481,7 +498,32 @@ export function App() {
       </div>
 
       <footer class="footer-bar">
-        <span>Lịch sử: Dukascopy · Realtime: Gold-API / FXRates / Binance</span>
+        <div class="footer-left">
+          {fxStatus.mode === 'mt5' ? (
+            <span class="status-mt5" data-testid="mt5-status">
+              🟢 MT5 Live ({fxStatus.server || fxStatus.company || 'Local'})
+            </span>
+          ) : (
+            <span class="status-fallback-wrap">
+              <span data-testid="mt5-status">⚪ Dukascopy (dự phòng)</span>
+              <span>·</span>
+              <button
+                type="button"
+                class="footer-link-btn"
+                data-testid="mt5-connect-btn"
+                onClick={handleRetryMt5}
+              >
+                [Kết nối MT5]
+              </button>
+              {mt5Hint && (
+                <div class="mt5-tooltip" data-testid="mt5-tooltip">
+                  <div>Mở MetaTrader 5 trên máy và chạy <code>mt5-bridge\start-mt5-bridge.bat</code></div>
+                  <div>để đồng bộ giá khớp broker 100%.</div>
+                </div>
+              )}
+            </span>
+          )}
+        </div>
         <span>
           {symbol} · Khung {timeframe} · {bars.length} nến
         </span>

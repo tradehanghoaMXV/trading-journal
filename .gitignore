@@ -3,3 +3,6 @@ dist
 public/data
 .DS_Store
 *.local
+mt5-bridge/.venv
+__pycache__
+*.pyc

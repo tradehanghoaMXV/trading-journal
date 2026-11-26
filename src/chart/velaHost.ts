@@ -546,6 +546,15 @@ export class VelaJournalHost {
     this.emitSnapshot(this.ws.chart);
   }
 
+  async reloadMarket() {
+    const sym = this.ws.chart.market.symbol ?? 'BTCUSDT';
+    const tf = this.ws.chart.market.timeframe ?? '60';
+    const altTf = tf === '60' ? '15' : '60';
+    await this.ws.chart.setMarket({ symbol: sym, timeframe: altTf });
+    await this.ws.chart.setMarket({ symbol: sym, timeframe: tf });
+    this.emitSnapshot(this.ws.chart);
+  }
+
   setLayout(layout: '1' | '2h' | '4') {
     this.ws.setLayout(layout);
   }

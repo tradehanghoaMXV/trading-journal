@@ -20,8 +20,15 @@
 ## Nguồn dữ liệu
 - **Crypto**: Lịch sử từ Binance REST (`data-api.binance.vision/api/v3/klines`) và realtime qua Binance WebSocket (`wss://data-stream.binance.vision/ws`).
 - **Forex & Kim loại (XAUUSD, XAGUSD, EURUSD, GBPUSD, USDJPY)**:
-  - Lịch sử từ **Dukascopy** (`jetta.dukascopy.com`, giá bid) được tải tăng dần trong GitHub Actions (`scripts/fetch-dukascopy.mjs`), căn nến **H4/D1 theo chuẩn broker GMT+2 mùa đông / GMT+3 mùa hè (đóng ngày 17:00 New York)**.
-  - Giá realtime không cần API key từ `api.gold-api.com` (XAU/XAG) và `api.fxratesapi.com` (FX).
+  - **Ưu tiên 1 (Khớp giá 100% broker):** Kết nối trực tiếp **MetaTrader 5** trên máy qua `mt5-bridge` (miễn phí, không API key).
+  - **Dự phòng (Mobile / khi tắt MT5):** Lịch sử từ **Dukascopy** (`jetta.dukascopy.com`, giá bid) được tải tăng dần trong GitHub Actions (`scripts/fetch-dukascopy.mjs`), căn nến **H4/D1 theo chuẩn broker GMT+2 mùa đông / GMT+3 mùa hè (đóng ngày 17:00 New York)**, kết hợp giá realtime từ `api.gold-api.com` (XAU/XAG) và `api.fxratesapi.com` (FX).
+
+## Kết nối MT5 miễn phí (khớp giá 100%)
+Để biểu đồ XAUUSD và Forex trên web khớp 100% giá và nến của sàn MetaTrader 5 bạn đang giao dịch:
+1. Mở phần mềm **MetaTrader 5** trên Windows và đăng nhập tài khoản sàn (Demo hoặc Live).
+2. Chạy file `mt5-bridge\start-mt5-bridge.bat` (nếu chưa tạo `.venv`, chạy `python -m venv mt5-bridge\.venv` và `mt5-bridge\.venv\Scripts\pip install MetaTrader5`).
+3. Mở lại trang web (hoặc bấm `[Kết nối MT5]` ở thanh trạng thái dưới cùng) → góc dưới bên trái sẽ chuyển sang `🟢 MT5 Live (<tên server>)`.
+4. Bridge tự động nhận diện hậu tố mã sàn (`XAUUSDm`, `XAUUSD.a`, `GOLD`, v.v.) và tự kết nối lại nếu bạn khởi động lại MT5.
 
 ## Công thức Consistency Score (0–100)
 Áp dụng cho từng trường phái khi có **≥ 10 lệnh đã đóng**:

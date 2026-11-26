@@ -1,10 +1,12 @@
 import { useEffect, useState } from 'preact/hooks';
 import {
   Camera,
+  Check,
   CheckCircle2,
   ChevronDown,
   ChevronRight,
   Columns2,
+  Pencil,
   PenLine,
   Plus,
   Trash2,
@@ -43,6 +45,7 @@ interface TradesTabProps {
   seed: TradeFormSeed | null;
   selectedTradeId: string | null;
   onSelectTrade: (id: string | null) => void;
+  onJumpToMarket: (symbol: string, timeframe: string) => Promise<void> | void;
   onSaveTrade: (trade: Trade) => Promise<void>;
   onDeleteTrade: (id: string) => Promise<void>;
   onClearSeed: () => void;
@@ -184,6 +187,11 @@ export function TradesTab(props: TradesTabProps) {
   const [viewerIsSaved, setViewerIsSaved] = useState<boolean>(true);
   const [modalBeforeNotes, setModalBeforeNotes] = useState<string>('');
   const [modalAfterNotes, setModalAfterNotes] = useState<string>('');
+  const [modalStatus, setModalStatus] = useState<'open' | 'closed'>('open');
+  const [modalExitPrice, setModalExitPrice] = useState<string>('');
+  const [modalRMultiple, setModalRMultiple] = useState<string>('');
+  const [modalChecklist, setModalChecklist] = useState<boolean[]>([]);
+  const [modalMistakes, setModalMistakes] = useState<string[]>([]);
   const [savingModalNotes, setSavingModalNotes] = useState<boolean>(false);
 
   const activeStrat =
@@ -233,6 +241,15 @@ export function TradesTab(props: TradesTabProps) {
     setViewerIsSaved(isSaved);
     setModalBeforeNotes(getTradeBeforeNotes(trade));
     setModalAfterNotes(getTradeAfterNotes(trade));
+    setModalStatus(trade.status);
+    setModalExitPrice(trade.exitPrice != null ? String(trade.exitPrice) : '');
+    setModalRMultiple(
+      trade.status === 'closed' && typeof trade.rMultiple === 'number' && Number.isFinite(trade.rMultiple)
+        ? String(trade.rMultiple)
+        : ''
+    );
+    setModalChecklist(trade.checklist ? [...trade.checklist] : []);
+    setModalMistakes(trade.mistakes ? [...trade.mistakes] : []);
   };
 
   const openFormPreviewViewer = (initialMode: 'before' | 'after') => {
@@ -267,21 +284,63 @@ export function TradesTab(props: TradesTabProps) {
     openViewer(previewTrade, initialMode, false);
   };
 
-  const handleSaveModalNotes = async () => {
+  const handleSaveModalChanges = async () => {
     if (!viewerTrade || !viewerIsSaved) return;
     setSavingModalNotes(true);
     try {
+      const ex = parseOptNumber(modalExitPrice);
+      const manualR = parseOptNumber(modalRMultiple);
+      const nextStatus: 'open' | 'closed' = ex !== undefined ? 'closed' : modalStatus;
+      let nextR: number | undefined;
+      if (nextStatus === 'closed') {
+        nextR =
+          manualR !== undefined
+            ? manualR
+            : computeRMultiple(
+                viewerTrade.side,
+                viewerTrade.entryPrice,
+                viewerTrade.stopLoss,
+                ex,
+                viewerTrade.takeProfit
+              ) ?? 0;
+      } else {
+        nextR = computeRMultiple(
+          viewerTrade.side,
+          viewerTrade.entryPrice,
+          viewerTrade.stopLoss,
+          undefined,
+          viewerTrade.takeProfit
+        );
+      }
+
       const updated: Trade = {
         ...viewerTrade,
         beforeNotes: modalBeforeNotes,
         afterNotes: modalAfterNotes,
         notes: modalBeforeNotes,
+        status: nextStatus,
+        exitPrice: nextStatus === 'closed' ? ex : undefined,
+        exitTime: nextStatus === 'closed' ? viewerTrade.exitTime ?? Date.now() : undefined,
+        rMultiple: nextR,
+        checklist: modalChecklist,
+        mistakes: modalMistakes,
       };
       await props.onSaveTrade(updated);
       setViewerTrade(updated);
+      setModalStatus(updated.status);
+      setModalExitPrice(updated.exitPrice != null ? String(updated.exitPrice) : '');
+      setModalRMultiple(
+        updated.status === 'closed' && typeof updated.rMultiple === 'number' && Number.isFinite(updated.rMultiple)
+          ? String(updated.rMultiple)
+          : ''
+      );
       if (editingId === updated.id) {
         setBeforeNotes(modalBeforeNotes);
         setAfterNotes(modalAfterNotes);
+        setStatus(updated.status);
+        setExitPrice(updated.exitPrice != null ? String(updated.exitPrice) : '');
+        setChecklist(updated.checklist);
+        setMistakes(updated.mistakes);
       }
     } finally {
       setSavingModalNotes(false);
@@ -311,6 +370,9 @@ export function TradesTab(props: TradesTabProps) {
     setAfterCapturedAt(t.afterCapturedAt);
     setDrawingsSnapshot(t.drawingsSnapshot);
     props.onSelectTrade(t.id);
+    if (t.symbol !== props.symbol || t.timeframe !== props.timeframe) {
+      void props.onJumpToMarket(t.symbol, t.timeframe);
+    }
   };
 
   const resetForm = () => {
@@ -422,25 +484,31 @@ export function TradesTab(props: TradesTabProps) {
       }
     }
 
+    const existing = editingId ? props.trades.find((x) => x.id === editingId) : undefined;
     const finalStatus: 'open' | 'closed' = ex !== undefined ? 'closed' : status;
-    const rMult =
+    const computedR =
       finalStatus === 'closed'
         ? computeRMultiple(side, ep, sl, ex, tp)
         : computeRMultiple(side, ep, sl, undefined, tp);
+    const rMult =
+      computedR !== undefined
+        ? computedR
+        : finalStatus === 'closed' && existing?.status === 'closed'
+          ? existing.rMultiple
+          : undefined;
 
-    const existing = editingId ? props.trades.find((x) => x.id === editingId) : undefined;
     const trade: Trade = {
       id: editingId ?? `tr-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
       mode,
-      symbol: props.symbol,
-      timeframe: props.timeframe,
+      symbol: existing?.symbol ?? props.symbol,
+      timeframe: existing?.timeframe ?? props.timeframe,
       side,
       entryTime,
       entryPrice: ep,
       stopLoss: sl,
       takeProfit: tp,
-      exitTime: finalStatus === 'closed' ? Date.now() : undefined,
-      exitPrice: finalStatus === 'closed' ? ex ?? tp : undefined,
+      exitTime: finalStatus === 'closed' ? existing?.exitTime ?? Date.now() : undefined,
+      exitPrice: finalStatus === 'closed' ? ex ?? existing?.exitPrice ?? tp : undefined,
       strategyId: activeStrat?.id ?? 'ema9-wma45-trend',
       checklist,
       emotion,
@@ -508,7 +576,33 @@ export function TradesTab(props: TradesTabProps) {
     viewerTrade !== null && modalBeforeNotes !== getTradeBeforeNotes(viewerTrade);
   const modalAfterDirty =
     viewerTrade !== null && modalAfterNotes !== getTradeAfterNotes(viewerTrade);
-  const modalNotesDirty = modalBeforeDirty || modalAfterDirty;
+  const origModalExit = viewerTrade?.exitPrice != null ? String(viewerTrade.exitPrice) : '';
+  const origModalR =
+    viewerTrade?.status === 'closed' &&
+    typeof viewerTrade.rMultiple === 'number' &&
+    Number.isFinite(viewerTrade.rMultiple)
+      ? String(viewerTrade.rMultiple)
+      : '';
+  const modalMetaDirty =
+    viewerTrade !== null &&
+    (modalStatus !== viewerTrade.status ||
+      modalExitPrice !== origModalExit ||
+      modalRMultiple !== origModalR ||
+      JSON.stringify(modalChecklist) !== JSON.stringify(viewerTrade.checklist ?? []) ||
+      JSON.stringify(modalMistakes) !== JSON.stringify(viewerTrade.mistakes ?? []));
+  const modalDirty = modalBeforeDirty || modalAfterDirty || modalMetaDirty;
+
+  const isFormCompliant =
+    (checklist.length === 0 || checklist.every(Boolean)) && mistakes.length === 0;
+
+  const toggleFormCompliant = () => {
+    if (isFormCompliant) {
+      setChecklist(activeStrat ? activeStrat.rules.map(() => false) : [false]);
+    } else {
+      setChecklist(activeStrat ? activeStrat.rules.map(() => true) : [true]);
+      setMistakes([]);
+    }
+  };
 
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: '8px', flex: 1, minHeight: 0 }}>
@@ -561,6 +655,43 @@ export function TradesTab(props: TradesTabProps) {
 
         {!formCollapsed && (
           <>
+            {editingId && (
+              <div
+                data-testid="editing-banner"
+                style={{
+                  display: 'flex',
+                  alignItems: 'center',
+                  justifyContent: 'space-between',
+                  padding: '3px 7px',
+                  marginBottom: '6px',
+                  borderRadius: '5px',
+                  background: 'rgba(56, 189, 248, 0.14)',
+                  border: '1px solid rgba(56, 189, 248, 0.45)',
+                  fontSize: '11px',
+                  color: '#38bdf8',
+                }}
+              >
+                <span>Đang sửa lệnh · {props.symbol} {props.timeframe}</span>
+                <button
+                  type="button"
+                  data-testid="editing-banner-cancel"
+                  onClick={resetForm}
+                  style={{
+                    background: 'none',
+                    border: 'none',
+                    color: '#f8fafc',
+                    cursor: 'pointer',
+                    fontSize: '11px',
+                    fontWeight: 600,
+                    padding: '0 4px',
+                    textDecoration: 'underline',
+                  }}
+                >
+                  Hủy
+                </button>
+              </div>
+            )}
+
             {/* 1 compact row: Entry (tự điền), SL, TP — all optional */}
             <div class="grid-3" style={{ marginBottom: '6px', gap: '5px' }}>
               <div>
@@ -608,6 +739,55 @@ export function TradesTab(props: TradesTabProps) {
                   onInput={(e) => setTakeProfit((e.target as HTMLInputElement).value)}
                 />
               </div>
+            </div>
+
+            {/* 1 ultra-compact 28px row: Strategy + Discipline pill */}
+            <div
+              data-testid="quick-strategy-row"
+              style={{
+                display: 'flex',
+                alignItems: 'center',
+                gap: '5px',
+                height: '28px',
+                marginBottom: '6px',
+              }}
+            >
+              <select
+                class="select input-compact"
+                data-testid="quick-strategy-select"
+                aria-label="Trường phái"
+                value={strategyId}
+                onChange={(e) => handleStrategyChange((e.target as HTMLSelectElement).value)}
+                style={{
+                  flex: 1,
+                  minWidth: 0,
+                  height: '26px',
+                  padding: '2px 6px',
+                  fontSize: '11px',
+                }}
+              >
+                {props.strategies.map((s) => (
+                  <option key={s.id} value={s.id}>
+                    {s.name}
+                  </option>
+                ))}
+              </select>
+              <button
+                type="button"
+                data-testid="quick-compliant-toggle"
+                class={`btn ${isFormCompliant ? 'btn-bull' : ''}`}
+                onClick={toggleFormCompliant}
+                title="Đánh dấu tuân thủ toàn bộ checklist trường phái"
+                style={{
+                  height: '26px',
+                  padding: '2px 8px',
+                  fontSize: '11px',
+                  whiteSpace: 'nowrap',
+                  flexShrink: 0,
+                }}
+              >
+                <Check size={11} /> Đúng luật
+              </button>
             </div>
 
             {/* Ghi chú Trước (lúc vào) */}
@@ -855,7 +1035,7 @@ export function TradesTab(props: TradesTabProps) {
                   style={{ flex: 1, justifyContent: 'center', padding: '4px 8px', fontSize: '11.5px' }}
                   data-testid="save-trade-btn"
                 >
-                  <Plus size={13} /> {editingId ? 'Cập nhật' : 'Lưu lệnh'}
+                  <Plus size={13} /> {editingId ? 'Cập nhật lệnh' : 'Lưu lệnh'}
                 </button>
                 {editingId && (
                   <button
@@ -1271,6 +1451,19 @@ export function TradesTab(props: TradesTabProps) {
                             <button
                               type="button"
                               class="btn"
+                              data-testid={`edit-trade-${t.id}`}
+                              title="Sửa lệnh"
+                              style={{ padding: '2px 4px' }}
+                              onClick={(ev) => {
+                                ev.stopPropagation();
+                                loadTradeIntoForm(t);
+                              }}
+                            >
+                              <Pencil size={11} color="#38bdf8" />
+                            </button>
+                            <button
+                              type="button"
+                              class="btn"
                               style={{ padding: '2px 4px' }}
                               onClick={(ev) => {
                                 ev.stopPropagation();
@@ -1608,12 +1801,12 @@ export function TradesTab(props: TradesTabProps) {
                   <button
                     type="button"
                     class="btn btn-primary"
-                    data-testid="modal-save-notes-btn"
-                    disabled={savingModalNotes || !modalNotesDirty}
+                    data-testid="modal-save-changes-btn"
+                    disabled={savingModalNotes || !modalDirty}
                     style={{ padding: '4px 10px', fontSize: '11.5px' }}
-                    onClick={handleSaveModalNotes}
+                    onClick={handleSaveModalChanges}
                   >
-                    {savingModalNotes ? 'Đang lưu...' : 'Lưu ghi chú'}
+                    {savingModalNotes ? 'Đang lưu...' : 'Lưu thay đổi'}
                   </button>
                 )}
                 <button
@@ -1636,6 +1829,186 @@ export function TradesTab(props: TradesTabProps) {
                 gap: '12px',
               }}
             >
+              {viewerIsSaved &&
+                (() => {
+                  const parsedModalR = parseOptNumber(modalRMultiple);
+                  const isModalWin = modalStatus === 'closed' && (parsedModalR ?? 0) > 0;
+                  const isModalLoss = modalStatus === 'closed' && (parsedModalR ?? 0) < 0;
+                  const isModalBE = modalStatus === 'closed' && (parsedModalR ?? 0) === 0;
+                  const isModalCompliant =
+                    (modalChecklist.length === 0 ||
+                      modalChecklist.filter(Boolean).length / modalChecklist.length >= 0.8) &&
+                    modalMistakes.length === 0;
+                  const modalStrat =
+                    props.strategies.find((s) => s.id === viewerTrade.strategyId) ??
+                    props.strategies[0];
+
+                  return (
+                    <div
+                      data-testid="modal-outcome-bar"
+                      style={{
+                        display: 'flex',
+                        alignItems: 'center',
+                        justifyContent: 'space-between',
+                        flexWrap: 'wrap',
+                        gap: '8px',
+                        padding: '8px 12px',
+                        background: '#131f33',
+                        border: '1px solid #2b3c58',
+                        borderRadius: '8px',
+                      }}
+                    >
+                      <div style={{ display: 'flex', alignItems: 'center', gap: '5px', flexWrap: 'wrap' }}>
+                        <span style={{ fontSize: '11px', fontWeight: 600, color: '#94a3b8', marginRight: '2px' }}>
+                          Kết quả:
+                        </span>
+                        <button
+                          type="button"
+                          data-testid="modal-status-open"
+                          class={`btn ${modalStatus === 'open' ? 'btn-active' : ''}`}
+                          style={{ padding: '3px 8px', fontSize: '11px' }}
+                          onClick={() => {
+                            setModalStatus('open');
+                            setModalExitPrice('');
+                            setModalRMultiple('');
+                          }}
+                        >
+                          Đang mở
+                        </button>
+                        <button
+                          type="button"
+                          data-testid="modal-outcome-win"
+                          class={`btn ${isModalWin ? 'btn-bull' : ''}`}
+                          style={{ padding: '3px 8px', fontSize: '11px' }}
+                          onClick={() => {
+                            setModalStatus('closed');
+                            const ex = parseOptNumber(modalExitPrice);
+                            const autoR = computeRMultiple(
+                              viewerTrade.side,
+                              viewerTrade.entryPrice,
+                              viewerTrade.stopLoss,
+                              ex,
+                              viewerTrade.takeProfit
+                            );
+                            setModalRMultiple(
+                              String(autoR !== undefined && autoR > 0 ? autoR : 1)
+                            );
+                          }}
+                        >
+                          Thắng
+                        </button>
+                        <button
+                          type="button"
+                          data-testid="modal-outcome-loss"
+                          class={`btn ${isModalLoss ? 'btn-bear' : ''}`}
+                          style={{ padding: '3px 8px', fontSize: '11px' }}
+                          onClick={() => {
+                            setModalStatus('closed');
+                            setModalRMultiple('-1');
+                          }}
+                        >
+                          Thua (-1R)
+                        </button>
+                        <button
+                          type="button"
+                          data-testid="modal-outcome-be"
+                          class={`btn ${isModalBE ? 'btn-active' : ''}`}
+                          style={{ padding: '3px 8px', fontSize: '11px' }}
+                          onClick={() => {
+                            setModalStatus('closed');
+                            setModalRMultiple('0');
+                          }}
+                        >
+                          Hòa (0R)
+                        </button>
+
+                        <div style={{ display: 'flex', alignItems: 'center', gap: '4px', marginLeft: '4px' }}>
+                          <span style={{ fontSize: '11px', color: '#94a3b8' }}>Giá thoát</span>
+                          <input
+                            type="number"
+                            step="any"
+                            class="input input-compact"
+                            data-testid="modal-exit-price-input"
+                            placeholder="Tùy chọn"
+                            value={modalExitPrice}
+                            style={{ width: '88px', height: '26px', padding: '2px 6px', fontSize: '11px' }}
+                            onInput={(e) => {
+                              const val = (e.target as HTMLInputElement).value;
+                              setModalExitPrice(val);
+                              const ex = parseOptNumber(val);
+                              if (ex !== undefined) {
+                                setModalStatus('closed');
+                                const autoR = computeRMultiple(
+                                  viewerTrade.side,
+                                  viewerTrade.entryPrice,
+                                  viewerTrade.stopLoss,
+                                  ex,
+                                  viewerTrade.takeProfit
+                                );
+                                if (autoR !== undefined) {
+                                  setModalRMultiple(String(autoR));
+                                }
+                              }
+                            }}
+                          />
+                        </div>
+
+                        <div style={{ display: 'flex', alignItems: 'center', gap: '4px' }}>
+                          <span style={{ fontSize: '11px', color: '#94a3b8' }}>R</span>
+                          <input
+                            type="number"
+                            step="any"
+                            class="input input-compact"
+                            data-testid="modal-r-input"
+                            placeholder="±R"
+                            value={modalRMultiple}
+                            style={{ width: '64px', height: '26px', padding: '2px 6px', fontSize: '11px' }}
+                            onInput={(e) => {
+                              const val = (e.target as HTMLInputElement).value;
+                              setModalRMultiple(val);
+                              if (parseOptNumber(val) !== undefined) {
+                                setModalStatus('closed');
+                              }
+                            }}
+                          />
+                        </div>
+                      </div>
+
+                      <div style={{ display: 'flex', alignItems: 'center', gap: '5px' }}>
+                        <span style={{ fontSize: '11px', fontWeight: 600, color: '#94a3b8' }}>
+                          Kỷ luật:
+                        </span>
+                        <button
+                          type="button"
+                          data-testid="modal-compliant-btn"
+                          class={`btn ${isModalCompliant ? 'btn-bull' : ''}`}
+                          style={{ padding: '3px 8px', fontSize: '11px' }}
+                          onClick={() => {
+                            setModalChecklist(
+                              modalStrat ? modalStrat.rules.map(() => true) : [true]
+                            );
+                            setModalMistakes([]);
+                          }}
+                        >
+                          Đúng luật ✓
+                        </button>
+                        <button
+                          type="button"
+                          data-testid="modal-rulebreak-btn"
+                          class={`btn ${!isModalCompliant ? 'btn-bear' : ''}`}
+                          style={{ padding: '3px 8px', fontSize: '11px' }}
+                          onClick={() => {
+                            setModalChecklist(
+                              modalStrat ? modalStrat.rules.map(() => false) : [false]
+                            );
+                          }}
+                        >
+                          Phá luật ✗
+                        </button>
+                      </div>
+                    </div>
+                  );
+                })()}
               <div
                 class={viewerMode === 'both' ? 'grid-2' : undefined}
                 style={

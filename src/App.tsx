@@ -442,6 +442,13 @@ export function App() {
                   seed={tradeSeed}
                   selectedTradeId={selectedTradeId}
                   onSelectTrade={setSelectedTradeId}
+                  onJumpToMarket={async (sym, tf) => {
+                    if (sym !== symbol || tf !== timeframe) {
+                      setSymbol(sym);
+                      setTimeframe(tf);
+                      await hostRef.current?.setMarket(sym, tf);
+                    }
+                  }}
                   onSaveTrade={async (trade) => {
                     await db.trades.put(trade);
                     setTrades(await db.trades.toArray());

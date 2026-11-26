@@ -18,7 +18,6 @@ const RIGHT_TABS: readonly { id: RightTabId; label: string }[] = [
   { id: 'notes', label: 'Ghi chú' },
   { id: 'consistency', label: 'Độ nhất quán' },
   { id: 'strategies', label: 'Trường phái' },
-  { id: 'backtest', label: 'Backtest' },
   { id: 'data', label: 'Dữ liệu' },
 ];
 
@@ -187,7 +186,7 @@ export function TopBar(props: TopBarProps) {
 
         <button
           data-testid="backtest-shortcut-btn"
-          class="btn"
+          class={`btn ${props.panelOpen && props.activeTab === 'backtest' ? 'btn-active' : ''}`}
           onClick={props.onOpenBacktest}
         >
           <Activity size={13} /> Backtest

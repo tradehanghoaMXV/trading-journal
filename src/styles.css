@@ -467,6 +467,24 @@ body,
   text-decoration: underline;
 }
 
+.footer-oanda-btn {
+  background: rgba(56, 189, 248, 0.12);
+  border: 1px solid rgba(56, 189, 248, 0.35);
+  border-radius: 4px;
+  color: #38bdf8;
+  font-size: 10.5px;
+  font-weight: 600;
+  cursor: pointer;
+  padding: 1px 6px;
+  font-family: inherit;
+  transition: background 0.15s, border-color 0.15s;
+}
+
+.footer-oanda-btn:hover {
+  background: rgba(56, 189, 248, 0.22);
+  border-color: #38bdf8;
+}
+
 .mt5-tooltip {
   position: absolute;
   bottom: 24px;

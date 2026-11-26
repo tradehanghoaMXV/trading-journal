@@ -100,8 +100,103 @@ async function fetchLiveSpotPrice(symbol: string): Promise<{ price: number; time
 
 const MT5_BRIDGE_URL = 'http://127.0.0.1:8765';
 const MT5_PROBE_TTL_MS = 4000;
+const OANDA_PROBE_TTL_MS = 10000;
+export const OANDA_WORKER_URL_KEY = 'tj_oanda_worker_url';
+
+export function normalizeOandaWorkerUrl(raw: string): string {
+  return raw.trim().replace(/\/+$/, '');
+}
+
+export function getConfiguredOandaUrl(): string {
+  try {
+    const stored = window.localStorage.getItem(OANDA_WORKER_URL_KEY);
+    if (stored && stored.trim()) {
+      return normalizeOandaWorkerUrl(stored);
+    }
+  } catch {
+    // ignore storage access issues
+  }
+  const envUrl = String(import.meta.env.VITE_OANDA_WORKER_URL ?? '');
+  return normalizeOandaWorkerUrl(envUrl);
+}
+
+export function setConfiguredOandaUrl(raw: string): string {
+  const clean = normalizeOandaWorkerUrl(raw);
+  try {
+    if (clean) {
+      window.localStorage.setItem(OANDA_WORKER_URL_KEY, clean);
+    } else {
+      window.localStorage.removeItem(OANDA_WORKER_URL_KEY);
+    }
+  } catch {
+    // ignore storage access issues
+  }
+  return clean;
+}
+
+export interface OandaHealthResult {
+  ok: boolean;
+  connected: boolean;
+  env?: string;
+  accountIdMasked?: string | null;
+  error?: string;
+}
+
+export async function checkOandaWorkerHealth(workerUrl: string): Promise<OandaHealthResult> {
+  const clean = normalizeOandaWorkerUrl(workerUrl);
+  if (!clean) {
+    return { ok: false, connected: false, error: 'Vui lòng nhập URL Cloudflare Worker.' };
+  }
+  const controller = new AbortController();
+  const timer = window.setTimeout(() => controller.abort(), 5000);
+  try {
+    const res = await fetch(`${clean}/health`, {
+      signal: controller.signal,
+      cache: 'no-store',
+    });
+    if (!res.ok) {
+      return {
+        ok: false,
+        connected: false,
+        error: `Worker trả về HTTP ${res.status}. Kiểm tra lại URL hoặc mã Worker.`,
+      };
+    }
+    const data = await res.json();
+    if (data?.ok && data?.connected) {
+      return {
+        ok: true,
+        connected: true,
+        env: String(data.env || 'practice'),
+        accountIdMasked: data.accountIdMasked ?? null,
+      };
+    }
+    return {
+      ok: Boolean(data?.ok),
+      connected: false,
+      env: data?.env,
+      error: data?.error || 'Worker chưa kết nối được tới OANDA (kiểm tra OANDA_TOKEN).',
+    };
+  } catch (err) {
+    const isAbort = err instanceof Error && err.name === 'AbortError';
+    return {
+      ok: false,
+      connected: false,
+      error: isAbort
+        ? 'Hết thời gian chờ kết nối tới Worker (timeout 5s).'
+        : 'Không thể kết nối tới URL Worker (lỗi mạng hoặc CORS).',
+    };
+  } finally {
+    clearTimeout(timer);
+  }
+}
 
 export type FxDataSourceStatus =
+  | {
+      mode: 'oanda';
+      url: string;
+      env: string;
+      accountIdMasked: string | null;
+    }
   | {
       mode: 'mt5';
       server: string | null;
@@ -115,8 +210,11 @@ export class DukascopyPythProvider implements DataProvider {
   private lastBarCache = new Map<string, OHLCV>();
   private status: FxDataSourceStatus = { mode: 'fallback' };
   private statusListeners = new Set<(s: FxDataSourceStatus) => void>();
-  private lastProbeAt = 0;
-  private probePromise: Promise<boolean> | null = null;
+  private lastMt5ProbeAt = 0;
+  private mt5ProbePromise: Promise<boolean> | null = null;
+  private lastOandaProbeAt = 0;
+  private lastOandaUrl = '';
+  private oandaProbePromise: Promise<boolean> | null = null;
 
   getApproxRange(symbol: string): { from: number; to: number } | undefined {
     return this.approxRanges.get(symbol);
@@ -139,7 +237,15 @@ export class DukascopyPythProvider implements DataProvider {
     const same =
       prev.mode === next.mode &&
       (prev.mode === 'fallback' ||
-        (next.mode === 'mt5' && prev.server === next.server && prev.company === next.company));
+        (prev.mode === 'oanda' &&
+          next.mode === 'oanda' &&
+          prev.url === next.url &&
+          prev.env === next.env &&
+          prev.accountIdMasked === next.accountIdMasked) ||
+        (prev.mode === 'mt5' &&
+          next.mode === 'mt5' &&
+          prev.server === next.server &&
+          prev.company === next.company));
     if (same) return;
     this.status = next;
     for (const cb of this.statusListeners) {
@@ -147,16 +253,61 @@ export class DukascopyPythProvider implements DataProvider {
     }
   }
 
-  async probeMt5(force = false): Promise<boolean> {
-    const now = Date.now();
-    if (!force && now - this.lastProbeAt < MT5_PROBE_TTL_MS) {
-      return this.status.mode === 'mt5';
-    }
-    if (this.probePromise && !force) {
-      return this.probePromise;
+  async probeOanda(force = false): Promise<boolean> {
+    const url = getConfiguredOandaUrl();
+    if (!url) {
+      this.lastOandaUrl = '';
+      this.lastOandaProbeAt = 0;
+      if (this.status.mode === 'oanda') {
+        this.setStatus({ mode: 'fallback' });
+      }
+      return false;
     }
 
-    this.probePromise = (async () => {
+    const now = Date.now();
+    if (!force && url === this.lastOandaUrl && now - this.lastOandaProbeAt < OANDA_PROBE_TTL_MS) {
+      return this.status.mode === 'oanda';
+    }
+    if (this.oandaProbePromise && !force) {
+      return this.oandaProbePromise;
+    }
+
+    this.oandaProbePromise = (async () => {
+      try {
+        const res = await checkOandaWorkerHealth(url);
+        this.lastOandaUrl = url;
+        this.lastOandaProbeAt = Date.now();
+        if (res.ok && res.connected) {
+          this.setStatus({
+            mode: 'oanda',
+            url,
+            env: res.env || 'practice',
+            accountIdMasked: res.accountIdMasked ?? null,
+          });
+          return true;
+        }
+        if (this.status.mode === 'oanda') {
+          this.setStatus({ mode: 'fallback' });
+        }
+        return false;
+      } finally {
+        this.oandaProbePromise = null;
+      }
+    })();
+
+    return this.oandaProbePromise;
+  }
+
+  async probeMt5(force = false): Promise<boolean> {
+    const now = Date.now();
+    if (!force && now - this.lastMt5ProbeAt < MT5_PROBE_TTL_MS) {
+      return this.status.mode === 'mt5';
+    }
+    if (this.mt5ProbePromise && !force) {
+      return this.mt5ProbePromise;
+    }
+
+    this.mt5ProbePromise = (async () => {
       const controller = new AbortController();
       const timer = window.setTimeout(() => controller.abort(), 1000);
       try {
@@ -165,7 +316,7 @@ export class DukascopyPythProvider implements DataProvider {
           cache: 'no-store',
         });
         if (!res.ok) {
-          this.setStatus({ mode: 'fallback' });
+          if (this.status.mode === 'mt5') this.setStatus({ mode: 'fallback' });
           return false;
         }
         const data = await res.json();
@@ -178,19 +329,26 @@ export class DukascopyPythProvider implements DataProvider {
           });
           return true;
         }
-        this.setStatus({ mode: 'fallback' });
+        if (this.status.mode === 'mt5') this.setStatus({ mode: 'fallback' });
         return false;
       } catch {
-        this.setStatus({ mode: 'fallback' });
+        if (this.status.mode === 'mt5') this.setStatus({ mode: 'fallback' });
         return false;
       } finally {
         clearTimeout(timer);
-        this.lastProbeAt = Date.now();
-        this.probePromise = null;
+        this.lastMt5ProbeAt = Date.now();
+        this.mt5ProbePromise = null;
       }
     })();
 
-    return this.probePromise;
+    return this.mt5ProbePromise;
+  }
+
+  async probeSource(force = false): Promise<'oanda' | 'mt5' | 'fallback'> {
+    if (await this.probeOanda(force)) return 'oanda';
+    if (await this.probeMt5(force)) return 'mt5';
+    this.setStatus({ mode: 'fallback' });
+    return 'fallback';
   }
 
   async listSymbols(): Promise<SymbolDescriptor[]> {
@@ -230,9 +388,39 @@ export class DukascopyPythProvider implements DataProvider {
 
     let bars: OHLCV[] = [];
 
-    // 1. Prefer local MT5 Bridge when connected (100% broker match)
-    const mt5Ok = await this.probeMt5();
-    if (mt5Ok) {
+    // 1. Prefer OANDA 24/7 Cloud Worker when configured & connected
+    const source = await this.probeSource();
+    if (source === 'oanda') {
+      const oandaUrl = getConfiguredOandaUrl();
+      const controller = new AbortController();
+      const timer = window.setTimeout(() => controller.abort(), 6000);
+      try {
+        const res = await fetch(
+          `${oandaUrl}/candles?symbol=${encodeURIComponent(sym)}&tf=${encodeURIComponent(timeframe)}&count=1500`,
+          { signal: controller.signal, cache: 'no-store' }
+        );
+        if (res.ok) {
+          const raw = await res.json();
+          if (Array.isArray(raw) && raw.length > 0) {
+            bars = raw
+              .filter((r) => Array.isArray(r) && r.length >= 5)
+              .map((r) => ({
+                time: Number(r[0]),
+                open: Number(r[1]),
+                high: Number(r[2]),
+                low: Number(r[3]),
+                close: Number(r[4]),
+                volume: Number(r[5] ?? 0),
+              }));
+          }
+        }
+      } catch {
+        // fall through to Dukascopy fallback
+      } finally {
+        clearTimeout(timer);
+      }
+    } else if (source === 'mt5') {
+      // 2. Local MT5 Bridge when connected (100% broker match)
       const controller = new AbortController();
       const timer = window.setTimeout(() => controller.abort(), 2500);
       try {
@@ -351,6 +539,38 @@ export class DukascopyPythProvider implements DataProvider {
       timer = window.setInterval(tick, intervalMs);
     };
 
+    const startOandaPollingFallback = (oandaUrl: string) => {
+      if (closed) return;
+      let failures = 0;
+      const poll = async () => {
+        if (closed) return;
+        try {
+          const res = await fetch(`${oandaUrl}/tick?symbol=${encodeURIComponent(sym)}`, {
+            cache: 'no-store',
+          });
+          if (!res.ok) throw new Error('oanda tick failed');
+          const t = await res.json();
+          failures = 0;
+          const price = typeof t?.mid === 'number' ? t.mid : t?.bid;
+          if (typeof price === 'number') {
+            applyPrice(price, Number(t.time_ms || Date.now()));
+          }
+        } catch {
+          failures += 1;
+          if (failures >= 4 && !closed) {
+            if (timer !== undefined) clearInterval(timer);
+            const nextSource = await this.probeSource(true);
+            if (closed) return;
+            if (nextSource === 'fallback') {
+              startFallbackPolling();
+            }
+          }
+        }
+      };
+      poll();
+      timer = window.setInterval(poll, 1500);
+    };
+
     const startMt5PollingFallback = () => {
       if (closed) return;
       let failures = 0;
@@ -380,9 +600,37 @@ export class DukascopyPythProvider implements DataProvider {
     };
 
     (async () => {
-      const mt5Ok = await this.probeMt5();
+      const source = await this.probeSource();
       if (closed) return;
-      if (mt5Ok) {
+      if (source === 'oanda') {
+        const oandaUrl = getConfiguredOandaUrl();
+        try {
+          es = new EventSource(`${oandaUrl}/stream?symbol=${encodeURIComponent(sym)}`);
+          es.onmessage = (ev) => {
+            if (closed) return;
+            try {
+              const d = JSON.parse(ev.data);
+              const price = typeof d?.mid === 'number' ? d.mid : d?.bid;
+              if (typeof price === 'number') {
+                applyPrice(price, Number(d.time_ms || Date.now()));
+              }
+            } catch {
+              // ignore malformed event
+            }
+          };
+          es.onerror = () => {
+            if (closed) return;
+            es?.close();
+            es = null;
+            startOandaPollingFallback(oandaUrl);
+          };
+          return;
+        } catch {
+          startOandaPollingFallback(oandaUrl);
+          return;
+        }
+      }
+      if (source === 'mt5') {
         try {
           es = new EventSource(`${MT5_BRIDGE_URL}/stream?symbol=${encodeURIComponent(sym)}`);
           es.onmessage = (ev) => {

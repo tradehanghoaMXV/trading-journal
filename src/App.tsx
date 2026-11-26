@@ -20,7 +20,11 @@ import { StrategiesTab } from './components/StrategiesTab';
 import { BacktestTab } from './components/BacktestTab';
 import { DataTab } from './components/DataTab';
 import { SYMBOL_MAP } from './config/symbols';
-import type { FxDataSourceStatus } from './providers/dukascopyPythProvider';
+import {
+  checkOandaWorkerHealth,
+  setConfiguredOandaUrl,
+  type FxDataSourceStatus,
+} from './providers/dukascopyPythProvider';
 
 const DEFAULT_REPLAY: ReplayState = {
   active: false,
@@ -202,7 +206,7 @@ export function App() {
     });
 
     const unsubStatus = host.dukascopyProvider.onStatusChange(setFxStatus);
-    host.dukascopyProvider.probeMt5();
+    host.dukascopyProvider.probeSource();
 
     return () => {
       unsubStatus();
@@ -255,6 +259,22 @@ export function App() {
     } else {
       setMt5Hint((v) => !v);
     }
+  };
+
+  const handleSaveOandaUrl = async (url: string) => {
+    const res = await checkOandaWorkerHealth(url);
+    if (res.ok && res.connected) {
+      setConfiguredOandaUrl(url);
+      await hostRef.current?.dukascopyProvider.probeSource(true);
+      await hostRef.current?.reloadMarket();
+    }
+    return res;
+  };
+
+  const handleClearOandaUrl = async () => {
+    setConfiguredOandaUrl('');
+    await hostRef.current?.dukascopyProvider.probeSource(true);
+    await hostRef.current?.reloadMarket();
   };
 
   const isApproxGap = Boolean(hostRef.current?.dukascopyProvider.getApproxRange(symbol));
@@ -485,6 +505,9 @@ export function App() {
                   tradeCount={trades.length}
                   noteCount={notes.length}
                   strategyCount={strategies.length}
+                  fxStatus={fxStatus}
+                  onSaveOandaUrl={handleSaveOandaUrl}
+                  onClearOandaUrl={handleClearOandaUrl}
                   onReloadData={loadDb}
                   onClearAllTradesAndNotes={async () => {
                     await Promise.all([db.trades.clear(), db.notes.clear()]);
@@ -499,7 +522,11 @@ export function App() {
 
       <footer class="footer-bar">
         <div class="footer-left">
-          {fxStatus.mode === 'mt5' ? (
+          {fxStatus.mode === 'oanda' ? (
+            <span class="status-mt5" data-testid="mt5-status">
+              🟢 OANDA Live (24/7)
+            </span>
+          ) : fxStatus.mode === 'mt5' ? (
             <span class="status-mt5" data-testid="mt5-status">
               🟢 MT5 Live ({fxStatus.server || fxStatus.company || 'Local'})
             </span>
@@ -523,6 +550,18 @@ export function App() {
               )}
             </span>
           )}
+          <span>·</span>
+          <button
+            type="button"
+            class="footer-oanda-btn"
+            data-testid="oanda-config-btn"
+            onClick={() => {
+              setActiveTab('data');
+              setPanelOpen(true);
+            }}
+          >
+            Cài nguồn OANDA
+          </button>
         </div>
         <span>
           {symbol} · Khung {timeframe} · {bars.length} nến

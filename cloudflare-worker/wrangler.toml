@@ -1,0 +1,11 @@
+name = "oanda-xau-proxy"
+main = "worker.js"
+compatibility_date = "2024-11-01"
+
+[vars]
+# "practice" (OANDA Demo - miễn phí 24/7) hoặc "live" (tài khoản thật)
+OANDA_ENV = "practice"
+
+# Cài secret bằng CLI (hoặc thêm trong Cloudflare Dashboard -> Settings -> Variables and Secrets):
+#   npx wrangler secret put OANDA_TOKEN
+# (Tuỳ chọn) Nếu có nhiều account, thêm OANDA_ACCOUNT_ID; bỏ trống Worker sẽ tự lấy account đầu tiên.

@@ -1,17 +1,69 @@
-import { useState } from 'preact/hooks';
-import { Download, Trash2, Upload } from 'lucide-preact';
+import { useEffect, useState } from 'preact/hooks';
+import { Cloud, Download, Trash2, Upload } from 'lucide-preact';
 import { exportJournalJson, importJournalJson } from '../db/journalDb';
+import {
+  getConfiguredOandaUrl,
+  type FxDataSourceStatus,
+  type OandaHealthResult,
+} from '../providers/dukascopyPythProvider';
 
 interface DataTabProps {
   tradeCount: number;
   noteCount: number;
   strategyCount: number;
+  fxStatus: FxDataSourceStatus;
+  onSaveOandaUrl: (url: string) => Promise<OandaHealthResult>;
+  onClearOandaUrl: () => Promise<void>;
   onReloadData: () => Promise<void>;
   onClearAllTradesAndNotes: () => Promise<void>;
 }
 
 export function DataTab(props: DataTabProps) {
   const [msg, setMsg] = useState('');
+  const [oandaUrl, setOandaUrl] = useState(() => getConfiguredOandaUrl());
+  const [oandaBusy, setOandaBusy] = useState(false);
+  const [oandaFeedback, setOandaFeedback] = useState<{ ok: boolean; text: string } | null>(null);
+
+  useEffect(() => {
+    setOandaUrl(getConfiguredOandaUrl());
+  }, [props.fxStatus]);
+
+  const handleSaveOanda = async () => {
+    setOandaBusy(true);
+    setOandaFeedback(null);
+    try {
+      const res = await props.onSaveOandaUrl(oandaUrl);
+      if (res.ok && res.connected) {
+        const acct = res.accountIdMasked ? ` · TK ${res.accountIdMasked}` : '';
+        setOandaFeedback({
+          ok: true,
+          text: `Đã kết nối OANDA (${res.env || 'practice'}${acct}) và tải lại biểu đồ.`,
+        });
+      } else {
+        setOandaFeedback({
+          ok: false,
+          text: res.error || 'Không thể kết nối tới OANDA Worker.',
+        });
+      }
+    } finally {
+      setOandaBusy(false);
+    }
+  };
+
+  const handleClearOanda = async () => {
+    setOandaBusy(true);
+    setOandaFeedback(null);
+    try {
+      await props.onClearOandaUrl();
+      setOandaUrl('');
+      setOandaFeedback({
+        ok: true,
+        text: 'Đã xóa URL OANDA và chuyển về nguồn dự phòng/MT5.',
+      });
+    } finally {
+      setOandaBusy(false);
+    }
+  };
 
   const handleExport = async () => {
     const payload = await exportJournalJson();
@@ -45,6 +97,80 @@ export function DataTab(props: DataTabProps) {
 
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: '10px' }}>
+      <div class="card" data-testid="oanda-config-card">
+        <div class="card-title">
+          <span style={{ display: 'inline-flex', alignItems: 'center', gap: '6px' }}>
+            <Cloud size={14} color="#38bdf8" /> Nguồn giá XAU/Forex 24/7 (OANDA Worker)
+          </span>
+          <span
+            class={`pill ${props.fxStatus.mode === 'oanda' ? 'pill-bull' : 'pill-accent'}`}
+            data-testid="oanda-card-status"
+          >
+            {props.fxStatus.mode === 'oanda'
+              ? 'OANDA Live'
+              : props.fxStatus.mode === 'mt5'
+                ? 'MT5 Local'
+                : 'Dukascopy'}
+          </span>
+        </div>
+        <div style={{ fontSize: '11.5px', color: 'var(--text-muted)', marginBottom: '8px', lineHeight: 1.45 }}>
+          Dán URL Cloudflare Worker (<code>cloudflare-worker/worker.js</code>) để xem XAUUSD &amp; Forex 24/7 khớp TradingView <code>OANDA:XAUUSD</code> mà không cần mở Windows/MT5.
+        </div>
+        <label class="field-label" for="oanda-worker-url-input">
+          Cloudflare Worker URL
+        </label>
+        <input
+          id="oanda-worker-url-input"
+          data-testid="oanda-url-input"
+          type="url"
+          class="input"
+          style={{ width: '100%', marginBottom: '8px' }}
+          placeholder="https://oanda-xau.xxx.workers.dev"
+          value={oandaUrl}
+          onInput={(e) => setOandaUrl((e.target as HTMLInputElement).value)}
+        />
+        <div style={{ display: 'flex', gap: '6px' }}>
+          <button
+            type="button"
+            class="btn btn-primary"
+            style={{ flex: 1, justifyContent: 'center' }}
+            data-testid="oanda-save-btn"
+            disabled={oandaBusy}
+            onClick={handleSaveOanda}
+          >
+            {oandaBusy ? 'Đang kiểm tra...' : 'Lưu & Kết nối'}
+          </button>
+          {(oandaUrl.trim().length > 0 || props.fxStatus.mode === 'oanda') && (
+            <button
+              type="button"
+              class="btn"
+              data-testid="oanda-clear-btn"
+              disabled={oandaBusy}
+              onClick={handleClearOanda}
+            >
+              Xóa URL
+            </button>
+          )}
+        </div>
+        {oandaFeedback && (
+          <div
+            data-testid="oanda-feedback"
+            class={`pill ${oandaFeedback.ok ? 'pill-bull' : 'pill-bear'}`}
+            style={{
+              marginTop: '8px',
+              width: '100%',
+              justifyContent: 'center',
+              borderRadius: '6px',
+              padding: '6px 8px',
+              textAlign: 'center',
+              lineHeight: 1.35,
+            }}
+          >
+            {oandaFeedback.text}
+          </div>
+        )}
+      </div>
+
       <div class="card">
         <div class="card-title">Trạng thái IndexedDB (Dexie)</div>
         <div style={{ fontSize: '12px', color: '#cbd5e1', lineHeight: 1.7 }}>

@@ -1,4 +1,10 @@
 import Dexie, { type Table } from 'dexie';
+import {
+  loadWorkspaceState,
+  sanitizeWorkspaceState,
+  saveWorkspaceState,
+  type PersistedWorkspaceState,
+} from '../chart/workspacePersistence';
 
 export type TradeMode = 'live' | 'replay' | 'backtest';
 export type TradeSide = 'long' | 'short';
@@ -197,6 +203,7 @@ export interface JournalExportPayload {
   trades: Trade[];
   notes: ChartNote[];
   drawings: DrawingRecord[];
+  workspaceState?: PersistedWorkspaceState;
 }
 
 export async function exportJournalJson(): Promise<JournalExportPayload> {
@@ -213,6 +220,7 @@ export async function exportJournalJson(): Promise<JournalExportPayload> {
     trades,
     notes,
     drawings,
+    workspaceState: loadWorkspaceState(),
   };
 }
 
@@ -234,4 +242,10 @@ export async function importJournalJson(payload: JournalExportPayload): Promise<
       await db.drawings.bulkPut(payload.drawings);
     }
   });
+  if (payload.workspaceState) {
+    const clean = sanitizeWorkspaceState(payload.workspaceState);
+    if (clean) {
+      saveWorkspaceState(clean);
+    }
+  }
 }

@@ -8,6 +8,18 @@ import { registerJournalIndicators } from '../indicators/emaWma';
 import { SYMBOL_MAP } from '../config/symbols';
 import type { ChartNote, Trade, TradeSide } from '../db/journalDb';
 import type { DraftPosition, JournalLayerPayload } from './journalLayer';
+import {
+  layoutPaneCount,
+  loadWorkspaceState,
+  normalizeLayout,
+  PANE_IDS,
+  resetWorkspaceState,
+  saveWorkspaceState,
+  type PersistedIndicator,
+  type PersistedPaneState,
+  type PersistedWorkspaceState,
+  type WorkspaceLayout,
+} from './workspacePersistence';
 
 export type ActiveTool = 'cursor' | 'long' | 'short' | 'note';
 
@@ -35,7 +47,7 @@ let currentOverlayPayload: JournalLayerPayload = {
   selectedTradeId: null,
 };
 const layerRepainters = new Set<() => void>();
-let onLayerBarsPainted: ((bars: readonly OHLCV[]) => void) | null = null;
+let onLayerBarsPainted: ((bars: readonly OHLCV[], canvas: HTMLCanvasElement) => void) | null = null;
 
 function ensureViLocale() {
   if (localesRegistered) return;
@@ -180,7 +192,7 @@ function ensureJournalLayer() {
         lastActiveCanvas = canvas;
         coordCaches.set(canvas, { canvas, args });
         if (args.bars.length > 0) {
-          onLayerBarsPainted?.(args.bars);
+          onLayerBarsPainted?.(args.bars, canvas);
         }
 
         const dpr = args.coords.dpr || window.devicePixelRatio || 1;
@@ -343,10 +355,21 @@ export class VelaJournalHost {
   private binanceProvider: BinanceVisionProvider;
   private latestBars: OHLCV[] = [];
   private onSnapshot?: (snap: ChartSnapshot) => void;
+  private onLayoutChange?: (layout: WorkspaceLayout) => void;
+  private savedState: PersistedWorkspaceState;
+  private attachedCharts = new WeakSet<Vela>();
+  private readyCharts = new WeakSet<Vela>();
+  private restoringDrawings = new WeakSet<Vela>();
+  private saveTimer: number | null = null;
+  private destroyed = false;
   private toolHandler?: {
     getTool: () => ActiveTool;
     onClick: (time: number, price: number) => void;
     onMove: (time: number, price: number) => void;
+  };
+
+  private handleBeforeUnload = () => {
+    this.saveNow();
   };
 
   constructor(
@@ -356,10 +379,12 @@ export class VelaJournalHost {
       initialTimeframe?: string;
       onSnapshot?: (snap: ChartSnapshot) => void;
       onBarUpdate?: (bar: OHLCV, symbol: string, timeframe: string) => void;
+      onLayoutChange?: (layout: WorkspaceLayout) => void;
     }
   ) {
     this.container = container;
     this.onSnapshot = opts.onSnapshot;
+    this.onLayoutChange = opts.onLayoutChange;
     ensureViLocale();
     registerJournalIndicators();
     ensureJournalLayer();
@@ -367,17 +392,36 @@ export class VelaJournalHost {
     this.binanceProvider = new BinanceVisionProvider();
     this.dukascopyProvider = new DukascopyPythProvider();
 
-    this.ws = new VelaWorkspace(container, {
-      layout: '1',
+    this.savedState = loadWorkspaceState();
+    const activeIdx = Math.min(
+      this.savedState.activePaneIndex,
+      layoutPaneCount(this.savedState.layout) - 1
+    );
+    const activeSeed = this.savedState.panes[activeIdx] ?? {
       symbol: opts.initialSymbol ?? 'BTCUSDT',
       timeframe: opts.initialTimeframe ?? '60',
+    };
+
+    const cells: Record<string, { symbol: string; timeframe: string }> = {};
+    for (let i = 0; i < PANE_IDS.length; i++) {
+      const p = this.savedState.panes[i];
+      cells[PANE_IDS[i]!] = {
+        symbol: p?.symbol ?? opts.initialSymbol ?? 'BTCUSDT',
+        timeframe: p?.timeframe ?? opts.initialTimeframe ?? '60',
+      };
+    }
+
+    this.ws = new VelaWorkspace(container, {
+      layout: this.savedState.layout,
+      symbol: activeSeed.symbol,
+      timeframe: activeSeed.timeframe,
+      cells,
       theme: 'dark',
       live: true,
       volume: true,
       statusline: true,
       watermark: true,
       topbar: { left: ['symbol', 'timeframe', 'indicators'], right: ['fullscreen'] },
-      persist: 'trading-journal-ws-v1',
       providers: {
         binance: () => this.binanceProvider,
         fx: () => this.dukascopyProvider,
@@ -386,9 +430,15 @@ export class VelaJournalHost {
       downColor: '#FF3B5C',
     });
 
+    const activeTargetId = PANE_IDS[activeIdx];
+    if (activeIdx > 0 && activeTargetId && this.ws.cell(activeTargetId)) {
+      this.ws.setActiveCell(activeTargetId);
+    }
+
     this.ws.setLocale('vi');
-    onLayerBarsPainted = (bars) => {
+    onLayerBarsPainted = (bars, canvas) => {
       if (bars.length === 0) return;
+      if (!this.isCanvasInActiveCell(canvas)) return;
       const prevLast = this.latestBars[this.latestBars.length - 1];
       const nextLast = bars[bars.length - 1]!;
       if (
@@ -402,12 +452,185 @@ export class VelaJournalHost {
     };
     this.wireChartEvents(opts.onBarUpdate);
     this.wirePointerOverlay(container);
+    window.addEventListener('beforeunload', this.handleBeforeUnload);
+  }
+
+  private isCanvasInActiveCell(canvas: HTMLCanvasElement | null): boolean {
+    if (!canvas) return false;
+    try {
+      return Boolean(this.ws.active?.host?.contains(canvas));
+    } catch {
+      return false;
+    }
+  }
+
+  private getActiveCanvas(): HTMLCanvasElement | null {
+    try {
+      const host = this.ws.active?.host;
+      if (host) {
+        const canvases = Array.from(host.querySelectorAll('canvas'));
+        for (let i = canvases.length - 1; i >= 0; i--) {
+          const c = canvases[i]!;
+          if (coordCaches.has(c)) return c;
+        }
+      }
+    } catch {
+      // ignore
+    }
+    return lastActiveCanvas;
+  }
+
+  private getPaneIndex(cellId: string): number {
+    const known = PANE_IDS.indexOf(cellId as (typeof PANE_IDS)[number]);
+    if (known >= 0) return known;
+    const liveIdx = this.ws.cells().findIndex((c) => c.id === cellId);
+    return liveIdx >= 0 ? liveIdx : 0;
+  }
+
+  private scheduleSave() {
+    if (this.destroyed) return;
+    if (this.saveTimer !== null) {
+      window.clearTimeout(this.saveTimer);
+    }
+    this.saveTimer = window.setTimeout(() => {
+      this.saveTimer = null;
+      this.saveNow();
+    }, 250);
+  }
+
+  public saveNow(): PersistedWorkspaceState {
+    if (this.saveTimer !== null) {
+      window.clearTimeout(this.saveTimer);
+      this.saveTimer = null;
+    }
+    const nextPanes: PersistedPaneState[] = [];
+    for (let i = 0; i < 4; i++) {
+      const prev = this.savedState.panes[i];
+      nextPanes.push(
+        prev
+          ? {
+              symbol: prev.symbol,
+              timeframe: prev.timeframe,
+              ...(prev.drawings !== undefined ? { drawings: prev.drawings } : {}),
+              ...(prev.indicators !== undefined ? { indicators: prev.indicators } : {}),
+            }
+          : { symbol: 'BTCUSDT', timeframe: '60' }
+      );
+    }
+
+    for (const cell of this.ws.cells()) {
+      const idx = this.getPaneIndex(cell.id);
+      if (idx < 0 || idx >= 4) continue;
+      const prev = nextPanes[idx]!;
+      const chart = cell.chart;
+      const symbol = (chart.market.symbol ?? prev.symbol ?? 'BTCUSDT').toUpperCase();
+      const timeframe = chart.market.timeframe ?? prev.timeframe ?? '60';
+
+      let drawings = prev.drawings;
+      let indicators = prev.indicators;
+
+      if (this.readyCharts.has(chart)) {
+        try {
+          const doc = chart.drawings.toJSON();
+          drawings = doc && Array.isArray(doc.drawings) && doc.drawings.length > 0 ? doc : undefined;
+        } catch {
+          // keep previous drawings
+        }
+
+        try {
+          const inds: PersistedIndicator[] = [];
+          for (const h of chart.indicators()) {
+            if (!h.nativeType) continue;
+            const inputs = h.inputValues();
+            const entry: PersistedIndicator = { type: h.nativeType };
+            if (inputs && Object.keys(inputs).length > 0) {
+              entry.inputs = { ...inputs };
+            }
+            inds.push(entry);
+          }
+          indicators = inds;
+        } catch {
+          // keep previous indicators
+        }
+      }
+
+      nextPanes[idx] = {
+        symbol,
+        timeframe,
+        ...(drawings !== undefined ? { drawings } : {}),
+        ...(indicators !== undefined ? { indicators } : {}),
+      };
+    }
+
+    const layout = normalizeLayout(this.ws.layout.id);
+    const activeIdxRaw = this.getPaneIndex(this.ws.active.id);
+    const activePaneIndex = Math.max(0, Math.min(layoutPaneCount(layout) - 1, activeIdxRaw));
+
+    const snapshot: PersistedWorkspaceState = {
+      version: 1,
+      layout,
+      activePaneIndex,
+      panes: nextPanes,
+    };
+    this.savedState = snapshot;
+    saveWorkspaceState(snapshot);
+    return snapshot;
+  }
+
+  private applyPaneContent(cellId: string, chart: Vela) {
+    const idx = this.getPaneIndex(cellId);
+    const savedPane = this.savedState.panes[idx];
+    const present = new Set(chart.presentNativeIndicators());
+
+    if (savedPane && Array.isArray(savedPane.indicators)) {
+      for (const ind of savedPane.indicators) {
+        if (!ind.type) continue;
+        if (ind.type.toLowerCase().includes('volume') && present.has(ind.type)) continue;
+        if (!present.has(ind.type)) {
+          try {
+            chart.addNativeIndicator(
+              ind.type,
+              ind.inputs ? { inputs: ind.inputs as Record<string, never> } : undefined
+            );
+            present.add(ind.type);
+          } catch {
+            // ignore unsupported indicator
+          }
+        }
+      }
+    } else {
+      if (!present.has('journal.ema9')) {
+        chart.addNativeIndicator('journal.ema9', { inputs: { length: 9 } });
+      }
+      if (!present.has('journal.wma45')) {
+        chart.addNativeIndicator('journal.wma45', { inputs: { length: 45 } });
+      }
+      if (!present.has('journal.rsi_ema_wma')) {
+        chart.addNativeIndicator('journal.rsi_ema_wma', {
+          inputs: { rsiLength: 14, emaLength: 9, wmaLength: 45 },
+        });
+      }
+    }
+
+    if (savedPane?.drawings) {
+      this.restoringDrawings.add(chart);
+      try {
+        chart.drawings.fromJSON(savedPane.drawings);
+      } catch {
+        // ignore malformed drawings
+      } finally {
+        this.restoringDrawings.delete(chart);
+      }
+    }
   }
 
   private wireChartEvents(
     onBarUpdate?: (bar: OHLCV, symbol: string, timeframe: string) => void
   ) {
-    const attach = (chart: Vela) => {
+    const attach = (cellId: string, chart: Vela) => {
+      if (this.attachedCharts.has(chart)) return;
+      this.attachedCharts.add(chart);
+
       const syncVolume = () => {
         const sym = (chart.market.symbol ?? 'BTCUSDT').toUpperCase();
         const isFx = SYMBOL_MAP.get(sym)?.group === 'forex';
@@ -424,38 +647,56 @@ export class VelaJournalHost {
         }
       };
 
-      // Enable EMA 9, WMA 45, and RSI + EMA9 / WMA45 by default if none present
       chart.ready().then(() => {
-        const present = chart.presentNativeIndicators();
-        if (!present.includes('journal.ema9')) {
-          chart.addNativeIndicator('journal.ema9', { inputs: { length: 9 } });
-        }
-        if (!present.includes('journal.wma45')) {
-          chart.addNativeIndicator('journal.wma45', { inputs: { length: 45 } });
-        }
-        if (!present.includes('journal.rsi_ema_wma')) {
-          chart.addNativeIndicator('journal.rsi_ema_wma', {
-            inputs: { rsiLength: 14, emaLength: 9, wmaLength: 45 },
-          });
-        }
+        if (this.destroyed) return;
+        this.readyCharts.add(chart);
+        this.applyPaneContent(cellId, chart);
         syncVolume();
-        this.emitSnapshot(chart);
+        if (chart === this.ws.chart) {
+          this.emitSnapshot(chart);
+        }
+        this.scheduleSave();
       });
 
       chart.on('load:start', () => {
-        this.latestBars = [];
+        if (chart === this.ws.chart) {
+          this.latestBars = [];
+        }
       });
       chart.on('load:end', () => {
         syncVolume();
-        this.emitSnapshot(chart);
+        if (chart === this.ws.chart) {
+          this.emitSnapshot(chart);
+        }
       });
       chart.on('market:changed', () => {
         syncVolume();
-        this.emitSnapshot(chart);
+        this.scheduleSave();
+        if (chart === this.ws.chart) {
+          this.emitSnapshot(chart);
+        }
+      });
+      chart.on('drawing:created', () => this.scheduleSave());
+      chart.on('drawing:edited', () => this.scheduleSave());
+      chart.on('drawing:removed', () => this.scheduleSave());
+      chart.on('drawing:history', () => this.scheduleSave());
+      chart.on('drawing:replaced', () => {
+        if (!this.restoringDrawings.has(chart)) {
+          this.scheduleSave();
+        }
+      });
+      chart.on('indicator:added', () => {
+        if (this.readyCharts.has(chart)) this.scheduleSave();
+      });
+      chart.on('indicator:removed', () => {
+        if (this.readyCharts.has(chart)) this.scheduleSave();
+      });
+      chart.on('indicator:inputs', () => {
+        if (this.readyCharts.has(chart)) this.scheduleSave();
       });
       chart.on('bar', (ev: unknown) => {
         const bar = (ev as { bar?: OHLCV })?.bar ?? (ev as OHLCV);
-        if (bar && typeof bar.close === 'number') {
+        if (bar && typeof bar.close === 'number' && chart === this.ws.chart) {
           onBarUpdate?.(bar, chart.market.symbol ?? 'BTCUSDT', chart.market.timeframe ?? '60');
           this.emitSnapshot(chart);
         }
@@ -463,19 +704,29 @@ export class VelaJournalHost {
     };
 
     for (const cell of this.ws.cells()) {
-      attach(cell.chart);
+      attach(cell.id, cell.chart);
     }
     this.ws.on('cell:created', (ev: unknown) => {
-      const cell = (ev as { cell?: { chart: Vela } })?.cell;
-      if (cell?.chart) attach(cell.chart);
+      const id = (ev as { id?: string; cell?: { id?: string } })?.id ?? (ev as { cell?: { id?: string } })?.cell?.id;
+      const cell = id ? this.ws.cell(id) : undefined;
+      if (cell) attach(cell.id, cell.chart);
     });
     this.ws.on('cell:active', () => {
+      this.latestBars = [];
+      this.scheduleSave();
+      this.emitSnapshot(this.ws.chart);
+    });
+    this.ws.on('layout:changed', (ev: unknown) => {
+      const next = normalizeLayout((ev as { layout?: string })?.layout ?? this.ws.layout.id);
+      this.onLayoutChange?.(next);
+      this.scheduleSave();
       this.emitSnapshot(this.ws.chart);
     });
   }
 
   private emitSnapshot(chart: Vela) {
-    const cache = lastActiveCanvas ? coordCaches.get(lastActiveCanvas) : undefined;
+    const activeCanvas = this.getActiveCanvas();
+    const cache = activeCanvas ? coordCaches.get(activeCanvas) : undefined;
     const bars = cache?.args.bars ? [...cache.args.bars] : this.latestBars;
     if (bars.length > 0) this.latestBars = bars;
     const lastBar = bars.length > 0 ? bars[bars.length - 1]! : null;
@@ -490,10 +741,11 @@ export class VelaJournalHost {
 
   private wirePointerOverlay(container: HTMLElement) {
     const resolvePoint = (ev: MouseEvent): { time: number; price: number } | null => {
-      if (!lastActiveCanvas) return null;
-      const cache = coordCaches.get(lastActiveCanvas);
+      const activeCanvas = this.getActiveCanvas();
+      if (!activeCanvas) return null;
+      const cache = coordCaches.get(activeCanvas);
       if (!cache) return null;
-      const rect = lastActiveCanvas.getBoundingClientRect();
+      const rect = activeCanvas.getBoundingClientRect();
       const x = ev.clientX - rect.left;
       const y = ev.clientY - rect.top;
       if (x < 0 || y < 0 || x > rect.width || y > rect.height) return null;
@@ -543,6 +795,7 @@ export class VelaJournalHost {
 
   async setMarket(symbol: string, timeframe: string) {
     await this.ws.chart.setMarket({ symbol, timeframe });
+    this.saveNow();
     this.emitSnapshot(this.ws.chart);
   }
 
@@ -555,12 +808,46 @@ export class VelaJournalHost {
     this.emitSnapshot(this.ws.chart);
   }
 
-  setLayout(layout: '1' | '2h' | '4') {
+  setLayout(layout: WorkspaceLayout) {
+    this.saveNow();
     this.ws.setLayout(layout);
+    this.saveNow();
+  }
+
+  async applyWorkspaceState(next: PersistedWorkspaceState) {
+    this.savedState = next;
+    saveWorkspaceState(next);
+    this.ws.setLayout(next.layout);
+    const cells = this.ws.cells();
+    for (const cell of cells) {
+      const idx = this.getPaneIndex(cell.id);
+      const target = next.panes[idx];
+      if (!target) continue;
+      if (
+        cell.chart.market.symbol !== target.symbol ||
+        cell.chart.market.timeframe !== target.timeframe
+      ) {
+        await cell.chart.setMarket({ symbol: target.symbol, timeframe: target.timeframe });
+      }
+      this.applyPaneContent(cell.id, cell.chart);
+    }
+    const activeId = PANE_IDS[next.activePaneIndex];
+    if (activeId && this.ws.cell(activeId)) {
+      this.ws.setActiveCell(activeId);
+    }
+    this.saveNow();
+    this.emitSnapshot(this.ws.chart);
+  }
+
+  async resetWorkspace(): Promise<PersistedWorkspaceState> {
+    const fresh = resetWorkspaceState();
+    await this.applyWorkspaceState(fresh);
+    return fresh;
   }
 
   getActiveBars(): OHLCV[] {
-    const cache = lastActiveCanvas ? coordCaches.get(lastActiveCanvas) : undefined;
+    const activeCanvas = this.getActiveCanvas();
+    const cache = activeCanvas ? coordCaches.get(activeCanvas) : undefined;
     return cache?.args.bars ? [...cache.args.bars] : this.latestBars;
   }
 
@@ -679,6 +966,9 @@ export class VelaJournalHost {
   }
 
   destroy() {
+    this.saveNow();
+    this.destroyed = true;
+    window.removeEventListener('beforeunload', this.handleBeforeUnload);
     this.ws.destroy();
   }
 }

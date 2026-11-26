@@ -15,6 +15,7 @@ interface DataTabProps {
   onSaveOandaUrl: (url: string) => Promise<OandaHealthResult>;
   onClearOandaUrl: () => Promise<void>;
   onReloadData: () => Promise<void>;
+  onResetWorkspace?: () => void;
   onClearAllTradesAndNotes: () => Promise<void>;
 }
 
@@ -196,6 +197,20 @@ export function DataTab(props: DataTabProps) {
               onChange={handleImport}
             />
           </label>
+
+          {props.onResetWorkspace && (
+            <button
+              class="btn"
+              style={{ justifyContent: 'center' }}
+              data-testid="reset-workspace-btn"
+              onClick={() => {
+                props.onResetWorkspace?.();
+                setMsg('Đã đặt lại bố cục biểu đồ về mặc định (1 biểu đồ).');
+              }}
+            >
+              Đặt lại bố cục biểu đồ
+            </button>
+          )}
 
           <button
             class="btn btn-bear"

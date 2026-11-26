@@ -10,6 +10,10 @@ import {
   type Trade,
 } from './db/journalDb';
 import { VelaJournalHost, type ActiveTool } from './chart/velaHost';
+import {
+  loadWorkspaceState,
+  type WorkspaceLayout,
+} from './chart/workspacePersistence';
 import type { DraftPosition } from './chart/journalLayer';
 import { TopBar, type RightTabId } from './components/TopBar';
 import { ReplayBar } from './components/ReplayBar';
@@ -39,9 +43,11 @@ export function App() {
   const containerRef = useRef<HTMLDivElement>(null);
   const hostRef = useRef<VelaJournalHost | null>(null);
 
-  const [symbol, setSymbol] = useState('BTCUSDT');
-  const [timeframe, setTimeframe] = useState('60');
-  const [layout, setLayout] = useState<'1' | '2h' | '4'>('1');
+  const [initialWs] = useState(() => loadWorkspaceState());
+  const initialActivePane = initialWs.panes[initialWs.activePaneIndex] ?? initialWs.panes[0]!;
+  const [symbol, setSymbol] = useState(initialActivePane.symbol);
+  const [timeframe, setTimeframe] = useState(initialActivePane.timeframe);
+  const [layout, setLayout] = useState<WorkspaceLayout>(initialWs.layout);
   const [lastPrice, setLastPrice] = useState<number | null>(null);
   const [bars, setBars] = useState<OHLCV[]>([]);
   const [replay, setReplay] = useState<ReplayState>(DEFAULT_REPLAY);
@@ -140,6 +146,9 @@ export function App() {
         setReplay(snap.replay);
       },
       onBarUpdate: handleBarUpdate,
+      onLayoutChange: (nextLayout) => {
+        setLayout(nextLayout);
+      },
     });
     hostRef.current = host;
 
@@ -508,7 +517,18 @@ export function App() {
                   fxStatus={fxStatus}
                   onSaveOandaUrl={handleSaveOandaUrl}
                   onClearOandaUrl={handleClearOandaUrl}
-                  onReloadData={loadDb}
+                  onReloadData={async () => {
+                    await loadDb();
+                    await hostRef.current?.applyWorkspaceState(loadWorkspaceState());
+                  }}
+                  onResetWorkspace={async () => {
+                    const fresh = await hostRef.current?.resetWorkspace();
+                    if (fresh) {
+                      setLayout(fresh.layout);
+                      setSymbol(fresh.panes[0]?.symbol ?? 'BTCUSDT');
+                      setTimeframe(fresh.panes[0]?.timeframe ?? '60');
+                    }
+                  }}
                   onClearAllTradesAndNotes={async () => {
                     await Promise.all([db.trades.clear(), db.notes.clear()]);
                     await loadDb();

@@ -154,6 +154,7 @@ export function TopBar(props: TopBarProps) {
           <button
             class={`btn ${props.layout === '1' ? 'btn-active' : ''}`}
             title="1 Biểu đồ"
+            data-testid="layout-btn-1"
             onClick={() => props.onSelectLayout('1')}
           >
             <Square size={13} /> 1
@@ -161,6 +162,7 @@ export function TopBar(props: TopBarProps) {
           <button
             class={`btn ${props.layout === '2h' ? 'btn-active' : ''}`}
             title="2 Biểu đồ"
+            data-testid="layout-btn-2h"
             onClick={() => props.onSelectLayout('2h')}
           >
             <Columns2 size={13} /> 2
@@ -168,6 +170,7 @@ export function TopBar(props: TopBarProps) {
           <button
             class={`btn ${props.layout === '4' ? 'btn-active' : ''}`}
             title="4 Biểu đồ"
+            data-testid="layout-btn-4"
             onClick={() => props.onSelectLayout('4')}
           >
             <Grid2x2 size={13} /> 4

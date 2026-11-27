@@ -17,6 +17,7 @@ export interface PersistedWorkspaceState {
   layout: WorkspaceLayout;
   activePaneIndex: number;
   panes: PersistedPaneState[];
+  updatedAt?: number;
 }
 
 export const WORKSPACE_STORAGE_KEY = 'tj_workspace_state_v1';
@@ -106,12 +107,34 @@ export function sanitizeWorkspaceState(raw: unknown): PersistedWorkspaceState | 
     : 0;
   const activePaneIndex = Math.max(0, Math.min(maxActive, rawActive));
 
+  const rawUpdatedAt =
+    typeof obj.updatedAt === 'number' && Number.isFinite(obj.updatedAt) ? obj.updatedAt : undefined;
+
   return {
     version: 1,
     layout,
     activePaneIndex,
     panes,
+    ...(rawUpdatedAt !== undefined ? { updatedAt: rawUpdatedAt } : {}),
   };
+}
+
+type WorkspaceSaveListener = (state: PersistedWorkspaceState) => void;
+const workspaceSaveListeners = new Set<WorkspaceSaveListener>();
+
+export function onWorkspaceStateSaved(listener: WorkspaceSaveListener): () => void {
+  workspaceSaveListeners.add(listener);
+  return () => {
+    workspaceSaveListeners.delete(listener);
+  };
+}
+
+export function hasSavedWorkspaceState(): boolean {
+  try {
+    return localStorage.getItem(WORKSPACE_STORAGE_KEY) !== null;
+  } catch {
+    return false;
+  }
 }
 
 export function loadWorkspaceState(): PersistedWorkspaceState {
@@ -125,11 +148,26 @@ export function loadWorkspaceState(): PersistedWorkspaceState {
   }
 }
 
-export function saveWorkspaceState(state: PersistedWorkspaceState): void {
+export function saveWorkspaceState(
+  state: PersistedWorkspaceState,
+  opts?: { silent?: boolean }
+): void {
+  const nextState: PersistedWorkspaceState = opts?.silent
+    ? state
+    : { ...state, updatedAt: Date.now() };
   try {
-    localStorage.setItem(WORKSPACE_STORAGE_KEY, JSON.stringify(state));
+    localStorage.setItem(WORKSPACE_STORAGE_KEY, JSON.stringify(nextState));
   } catch {
     // ignore quota / privacy errors
+  }
+  if (!opts?.silent) {
+    for (const cb of workspaceSaveListeners) {
+      try {
+        cb(nextState);
+      } catch {
+        // ignore listener errors
+      }
+    }
   }
 }
 

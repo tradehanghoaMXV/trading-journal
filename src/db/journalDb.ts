@@ -18,6 +18,7 @@ export interface Strategy {
   rules: string[];
   color: string;
   createdAt: number;
+  updatedAt?: number;
 }
 
 export interface Trade {
@@ -49,6 +50,7 @@ export interface Trade {
   afterCapturedAt?: number;
   drawingsSnapshot?: unknown;
   deletedAt?: number;
+  updatedAt?: number;
 }
 
 export function getTradeBeforeNotes(t: Pick<Trade, 'beforeNotes' | 'notes'>): string {
@@ -68,6 +70,7 @@ export interface ChartNote {
   color: string;
   tradeId?: string;
   createdAt: number;
+  updatedAt?: number;
 }
 
 export interface DrawingRecord {
@@ -200,7 +203,8 @@ export async function ensureDefaultStrategies(): Promise<void> {
 export async function softDeleteTrade(id: string): Promise<Trade | undefined> {
   const existing = await db.trades.get(id);
   if (!existing) return undefined;
-  const updated: Trade = { ...existing, deletedAt: Date.now() };
+  const now = Date.now();
+  const updated: Trade = { ...existing, deletedAt: now, updatedAt: now };
   await db.trades.put(updated);
   return updated;
 }
@@ -209,7 +213,7 @@ export async function restoreTrade(id: string): Promise<Trade | undefined> {
   const existing = await db.trades.get(id);
   if (!existing) return undefined;
   const { deletedAt: _deletedAt, ...rest } = existing;
-  const updated: Trade = rest;
+  const updated: Trade = { ...rest, updatedAt: Date.now() };
   await db.trades.put(updated);
   return updated;
 }
@@ -267,7 +271,7 @@ export async function importJournalJson(payload: JournalExportPayload): Promise<
   if (payload.workspaceState) {
     const clean = sanitizeWorkspaceState(payload.workspaceState);
     if (clean) {
-      saveWorkspaceState(clean);
+      saveWorkspaceState(clean, { silent: true });
     }
   }
 }

@@ -1,6 +1,14 @@
 import { useEffect, useState } from 'preact/hooks';
-import { Cloud, Download, Trash2, Upload } from 'lucide-preact';
+import { Cloud, Download, ExternalLink, RefreshCw, Trash2, Unplug, Upload } from 'lucide-preact';
 import { exportJournalJson, importJournalJson } from '../db/journalDb';
+import {
+  clearGitHubSyncConfig,
+  isGitHubSyncConfigured,
+  loadGitHubSyncConfig,
+  saveGitHubSyncConfig,
+  type GitHubSyncResult,
+  type GitHubSyncStatus,
+} from '../db/githubSync';
 import {
   getConfiguredOandaUrl,
   type FxDataSourceStatus,
@@ -12,6 +20,8 @@ interface DataTabProps {
   noteCount: number;
   strategyCount: number;
   fxStatus: FxDataSourceStatus;
+  githubSyncStatus: GitHubSyncStatus;
+  onSyncGitHubNow: () => Promise<GitHubSyncResult>;
   onSaveOandaUrl: (url: string) => Promise<OandaHealthResult>;
   onClearOandaUrl: () => Promise<void>;
   onReloadData: () => Promise<void>;
@@ -19,8 +29,25 @@ interface DataTabProps {
   onClearAllTradesAndNotes: () => Promise<void>;
 }
 
+function formatHm(ts?: number): string {
+  if (!ts) return '';
+  const d = new Date(ts);
+  const hh = String(d.getHours()).padStart(2, '0');
+  const mm = String(d.getMinutes()).padStart(2, '0');
+  return `${hh}:${mm}`;
+}
+
 export function DataTab(props: DataTabProps) {
   const [msg, setMsg] = useState('');
+  const [ghRepo, setGhRepo] = useState(() => {
+    const c = loadGitHubSyncConfig();
+    return `${c.owner}/${c.repo}`;
+  });
+  const [ghToken, setGhToken] = useState(() => loadGitHubSyncConfig().token);
+  const [ghBusy, setGhBusy] = useState(false);
+  const [ghFeedback, setGhFeedback] = useState<{ ok: boolean; text: string } | null>(null);
+  const [ghConnected, setGhConnected] = useState(() => isGitHubSyncConfigured());
+
   const [oandaUrl, setOandaUrl] = useState(() => getConfiguredOandaUrl());
   const [oandaBusy, setOandaBusy] = useState(false);
   const [oandaFeedback, setOandaFeedback] = useState<{ ok: boolean; text: string } | null>(null);
@@ -28,6 +55,87 @@ export function DataTab(props: DataTabProps) {
   useEffect(() => {
     setOandaUrl(getConfiguredOandaUrl());
   }, [props.fxStatus]);
+
+  useEffect(() => {
+    setGhConnected(isGitHubSyncConfigured());
+  }, [props.githubSyncStatus]);
+
+  const parseRepoSlug = (raw: string): { owner: string; repo: string } | null => {
+    const parts = raw
+      .trim()
+      .replace(/^https?:\/\/github\.com\//i, '')
+      .replace(/\.git$/i, '')
+      .split('/')
+      .map((s) => s.trim())
+      .filter(Boolean);
+    if (parts.length !== 2) return null;
+    return { owner: parts[0]!, repo: parts[1]! };
+  };
+
+  const handleConnectAndSyncGitHub = async () => {
+    const parsed = parseRepoSlug(ghRepo);
+    if (!parsed) {
+      setGhFeedback({ ok: false, text: 'Tên repo phải theo định dạng owner/repo.' });
+      return;
+    }
+    if (!ghToken.trim()) {
+      setGhFeedback({ ok: false, text: 'Vui lòng dán GitHub Fine-Grained Token.' });
+      return;
+    }
+    setGhBusy(true);
+    setGhFeedback(null);
+    try {
+      saveGitHubSyncConfig({
+        owner: parsed.owner,
+        repo: parsed.repo,
+        token: ghToken.trim(),
+      });
+      setGhConnected(true);
+      const res = await props.onSyncGitHubNow();
+      if (res.ok) {
+        setGhFeedback({
+          ok: true,
+          text: `Đã kết nối & đồng bộ ${res.tradeCount} lệnh lên ${parsed.owner}/${parsed.repo} (${formatHm(res.syncedAt)})`,
+        });
+      } else {
+        setGhFeedback({
+          ok: false,
+          text: res.errorMessage || 'Không thể đồng bộ lên GitHub.',
+        });
+      }
+    } finally {
+      setGhBusy(false);
+    }
+  };
+
+  const handleManualSyncGitHub = async () => {
+    setGhBusy(true);
+    setGhFeedback(null);
+    try {
+      const cfg = loadGitHubSyncConfig();
+      const res = await props.onSyncGitHubNow();
+      if (res.ok) {
+        setGhFeedback({
+          ok: true,
+          text: `Đã đồng bộ ${res.tradeCount} lệnh với ${cfg.owner}/${cfg.repo} (${formatHm(res.syncedAt)})`,
+        });
+      } else {
+        setGhFeedback({
+          ok: false,
+          text: res.errorMessage || 'Đồng bộ GitHub thất bại.',
+        });
+      }
+    } finally {
+      setGhBusy(false);
+    }
+  };
+
+  const handleDisconnectGitHub = () => {
+    clearGitHubSyncConfig();
+    setGhToken('');
+    setGhConnected(false);
+    setGhFeedback({ ok: true, text: 'Đã ngắt kết nối GitHub Cloud.' });
+  };
 
   const handleSaveOanda = async () => {
     setOandaBusy(true);
@@ -98,6 +206,142 @@ export function DataTab(props: DataTabProps) {
 
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: '10px' }}>
+      <div class="card" data-testid="github-sync-card">
+        <div class="card-title">
+          <span style={{ display: 'inline-flex', alignItems: 'center', gap: '6px' }}>
+            <Cloud size={14} color="#00F59B" /> ☁️ Lưu trữ đám mây trên GitHub (Tự động đồng bộ)
+          </span>
+          <span
+            class={`pill ${
+              props.githubSyncStatus.state === 'synced'
+                ? 'pill-bull'
+                : props.githubSyncStatus.state === 'error'
+                  ? 'pill-bear'
+                  : 'pill-accent'
+            }`}
+            data-testid="github-card-status"
+          >
+            {props.githubSyncStatus.state === 'syncing'
+              ? 'Đang đồng bộ'
+              : props.githubSyncStatus.state === 'synced'
+                ? `Đã lưu${props.githubSyncStatus.lastSyncedAt ? ` ${formatHm(props.githubSyncStatus.lastSyncedAt)}` : ''}`
+                : props.githubSyncStatus.state === 'error'
+                  ? 'Lỗi'
+                  : 'Chưa bật'}
+          </span>
+        </div>
+
+        <div style={{ fontSize: '11.5px', color: 'var(--text-muted)', marginBottom: '8px', lineHeight: 1.45 }}>
+          Đồng bộ toàn bộ lệnh, ảnh Before/After, ghi chú, thùng rác &amp; bố cục chart qua{' '}
+          <span style={{ color: '#e2e8f0', fontWeight: 600 }}>Repo riêng tư</span> GitHub (không cần backend).
+        </div>
+
+        <label class="field-label" for="github-repo-input">
+          Repo riêng tư (owner/repo)
+        </label>
+        <input
+          id="github-repo-input"
+          data-testid="github-repo-input"
+          type="text"
+          class="input"
+          style={{ width: '100%', marginBottom: '8px' }}
+          placeholder="tradehanghoaMXV/trading-journal-data"
+          value={ghRepo}
+          onInput={(e) => setGhRepo((e.target as HTMLInputElement).value)}
+        />
+
+        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '4px' }}>
+          <label class="field-label" for="github-token-input" style={{ marginBottom: 0 }}>
+            GitHub Fine-Grained Token
+          </label>
+          <a
+            href="https://github.com/settings/personal-access-tokens/new"
+            target="_blank"
+            rel="noopener noreferrer"
+            style={{
+              fontSize: '10.5px',
+              color: '#38bdf8',
+              textDecoration: 'none',
+              display: 'inline-flex',
+              alignItems: 'center',
+              gap: '3px',
+            }}
+          >
+            Tạo Token GitHub (chỉ cấp quyền Contents cho trading-journal-data) ↗
+            <ExternalLink size={10} />
+          </a>
+        </div>
+        <input
+          id="github-token-input"
+          data-testid="github-token-input"
+          type="password"
+          class="input"
+          style={{ width: '100%', marginBottom: '8px' }}
+          placeholder="github_pat_..."
+          value={ghToken}
+          onInput={(e) => setGhToken((e.target as HTMLInputElement).value)}
+        />
+
+        <div style={{ display: 'flex', gap: '6px', flexWrap: 'wrap' }}>
+          <button
+            type="button"
+            class="btn btn-primary"
+            style={{ flex: 1, justifyContent: 'center' }}
+            data-testid="github-connect-btn"
+            disabled={ghBusy}
+            onClick={handleConnectAndSyncGitHub}
+          >
+            {ghBusy ? 'Đang đồng bộ...' : 'Kết nối & Đồng bộ'}
+          </button>
+          {ghConnected && (
+            <>
+              <button
+                type="button"
+                class="btn"
+                data-testid="github-sync-now-btn"
+                disabled={ghBusy}
+                onClick={handleManualSyncGitHub}
+              >
+                <RefreshCw size={12} /> Đồng bộ ngay
+              </button>
+              <button
+                type="button"
+                class="btn btn-bear"
+                data-testid="github-disconnect-btn"
+                disabled={ghBusy}
+                onClick={handleDisconnectGitHub}
+              >
+                <Unplug size={12} /> Ngắt kết nối
+              </button>
+            </>
+          )}
+        </div>
+
+        {(ghFeedback || (props.githubSyncStatus.state === 'error' && props.githubSyncStatus.errorMessage)) && (
+          <div
+            data-testid="github-feedback"
+            class={`pill ${
+              ghFeedback
+                ? ghFeedback.ok
+                  ? 'pill-bull'
+                  : 'pill-bear'
+                : 'pill-bear'
+            }`}
+            style={{
+              marginTop: '8px',
+              width: '100%',
+              justifyContent: 'center',
+              borderRadius: '6px',
+              padding: '6px 8px',
+              textAlign: 'center',
+              lineHeight: 1.35,
+            }}
+          >
+            {ghFeedback ? ghFeedback.text : props.githubSyncStatus.errorMessage}
+          </div>
+        )}
+      </div>
+
       <div class="card" data-testid="oanda-config-card">
         <div class="card-title">
           <span style={{ display: 'inline-flex', alignItems: 'center', gap: '6px' }}>

@@ -12,9 +12,17 @@ import {
   type Strategy,
   type Trade,
 } from './db/journalDb';
+import {
+  isGitHubSyncConfigured,
+  onGitHubSyncStatusChange,
+  pullFromGitHub,
+  schedulePushToGitHub,
+  type GitHubSyncStatus,
+} from './db/githubSync';
 import { VelaJournalHost, type ActiveTool } from './chart/velaHost';
 import {
   loadWorkspaceState,
+  onWorkspaceStateSaved,
   type WorkspaceLayout,
 } from './chart/workspacePersistence';
 import type { DraftPosition } from './chart/journalLayer';
@@ -68,6 +76,9 @@ export function App() {
   const [tradeSeed, setTradeSeed] = useState<TradeFormSeed | null>(null);
   const [noteSeed, setNoteSeed] = useState<NoteFormSeed | null>(null);
   const [fxStatus, setFxStatus] = useState<FxDataSourceStatus>({ mode: 'fallback' });
+  const [githubSyncStatus, setGithubSyncStatus] = useState<GitHubSyncStatus>({
+    state: isGitHubSyncConfigured() ? 'synced' : 'unconfigured',
+  });
   const [mt5Hint, setMt5Hint] = useState(false);
   const [undoToast, setUndoToast] = useState<{ tradeId: string } | null>(null);
   const undoTimerRef = useRef<number | null>(null);
@@ -129,6 +140,31 @@ export function App() {
     loadDb();
   }, [loadDb]);
 
+  const runGitHubPullAndRefresh = useCallback(async () => {
+    const res = await pullFromGitHub();
+    if (res.ok) {
+      await loadDb();
+      if (res.workspaceRestored) {
+        await hostRef.current?.applyWorkspaceState(loadWorkspaceState());
+      }
+    }
+    return res;
+  }, [loadDb]);
+
+  useEffect(() => {
+    const unsubSync = onGitHubSyncStatusChange(setGithubSyncStatus);
+    const unsubWs = onWorkspaceStateSaved(() => {
+      schedulePushToGitHub();
+    });
+    if (isGitHubSyncConfigured()) {
+      void runGitHubPullAndRefresh();
+    }
+    return () => {
+      unsubSync();
+      unsubWs();
+    };
+  }, [runGitHubPullAndRefresh]);
+
   // Auto-close open replay trades when bar hits SL/TP
   const handleBarUpdate = useCallback(async (bar: OHLCV, barSym: string) => {
     setLastPrice(bar.close);
@@ -157,6 +193,7 @@ export function App() {
           exitTime: bar.time,
           exitPrice,
           rMultiple: computeRMultiple(t.side, t.entryPrice, t.stopLoss, exitPrice, t.takeProfit),
+          updatedAt: Date.now(),
         };
         await db.trades.put(updated);
         changed = true;
@@ -165,6 +202,7 @@ export function App() {
     if (changed) {
       const all = await db.trades.toArray();
       setTrades(all);
+      schedulePushToGitHub();
     }
   }, []);
 
@@ -491,8 +529,9 @@ export function App() {
                     }
                   }}
                   onSaveTrade={async (trade) => {
-                    await db.trades.put(trade);
+                    await db.trades.put({ ...trade, updatedAt: Date.now() });
                     setTrades(await db.trades.toArray());
+                    schedulePushToGitHub();
                   }}
                   onDeleteTrade={async (id) => {
                     await softDeleteTrade(id);
@@ -501,6 +540,7 @@ export function App() {
                       setSelectedTradeId(null);
                     }
                     showUndoToast(id);
+                    schedulePushToGitHub();
                   }}
                   onRestoreTrade={async (id) => {
                     await restoreTrade(id);
@@ -508,6 +548,7 @@ export function App() {
                     if (undoToast?.tradeId === id) {
                       clearUndoToast();
                     }
+                    schedulePushToGitHub();
                   }}
                   onPermanentDeleteTrade={async (id) => {
                     await permanentlyDeleteTrade(id);
@@ -515,6 +556,7 @@ export function App() {
                     if (undoToast?.tradeId === id) {
                       clearUndoToast();
                     }
+                    schedulePushToGitHub();
                   }}
                   onClearSeed={() => setTradeSeed(null)}
                   onCaptureChart={async () => {
@@ -533,12 +575,14 @@ export function App() {
                   notes={notes}
                   seed={noteSeed}
                   onSaveNote={async (note) => {
-                    await db.notes.put(note);
+                    await db.notes.put({ ...note, updatedAt: Date.now() });
                     setNotes(await db.notes.toArray());
+                    schedulePushToGitHub();
                   }}
                   onDeleteNote={async (id) => {
                     await db.notes.delete(id);
                     setNotes(await db.notes.toArray());
+                    schedulePushToGitHub();
                   }}
                   onClearSeed={() => setNoteSeed(null)}
                 />
@@ -552,12 +596,14 @@ export function App() {
                 <StrategiesTab
                   strategies={strategies}
                   onSaveStrategy={async (s) => {
-                    await db.strategies.put(s);
+                    await db.strategies.put({ ...s, updatedAt: Date.now() });
                     setStrategies(await db.strategies.orderBy('createdAt').toArray());
+                    schedulePushToGitHub();
                   }}
                   onDeleteStrategy={async (id) => {
                     await db.strategies.delete(id);
                     setStrategies(await db.strategies.orderBy('createdAt').toArray());
+                    schedulePushToGitHub();
                   }}
                 />
               )}
@@ -569,8 +615,10 @@ export function App() {
                   bars={bars.length > 0 ? bars : hostRef.current?.getActiveBars() ?? []}
                   strategies={strategies}
                   onSaveBacktestTrades={async (btTrades) => {
-                    await db.trades.bulkPut(btTrades);
+                    const now = Date.now();
+                    await db.trades.bulkPut(btTrades.map((t) => ({ ...t, updatedAt: now })));
                     setTrades(await db.trades.toArray());
+                    schedulePushToGitHub();
                   }}
                 />
               )}
@@ -581,11 +629,14 @@ export function App() {
                   noteCount={notes.length}
                   strategyCount={strategies.length}
                   fxStatus={fxStatus}
+                  githubSyncStatus={githubSyncStatus}
+                  onSyncGitHubNow={runGitHubPullAndRefresh}
                   onSaveOandaUrl={handleSaveOandaUrl}
                   onClearOandaUrl={handleClearOandaUrl}
                   onReloadData={async () => {
                     await loadDb();
                     await hostRef.current?.applyWorkspaceState(loadWorkspaceState());
+                    schedulePushToGitHub();
                   }}
                   onResetWorkspace={async () => {
                     const fresh = await hostRef.current?.resetWorkspace();
@@ -598,6 +649,7 @@ export function App() {
                   onClearAllTradesAndNotes={async () => {
                     await Promise.all([db.trades.clear(), db.notes.clear()]);
                     await loadDb();
+                    schedulePushToGitHub();
                   }}
                 />
               )}
@@ -648,6 +700,39 @@ export function App() {
           >
             Cài nguồn OANDA
           </button>
+          <span>·</span>
+          <button
+            type="button"
+            class={`footer-cloud-badge footer-cloud-badge--${githubSyncStatus.state}`}
+            data-testid="github-cloud-badge"
+            title={
+              githubSyncStatus.state === 'error'
+                ? githubSyncStatus.errorMessage || 'Lỗi đồng bộ GitHub'
+                : githubSyncStatus.state === 'synced'
+                  ? 'Bấm để đồng bộ ngay với GitHub Cloud'
+                  : 'Mở cài đặt GitHub Cloud'
+            }
+            onClick={() => {
+              if (githubSyncStatus.state === 'synced') {
+                void runGitHubPullAndRefresh();
+              } else {
+                setActiveTab('data');
+                setPanelOpen(true);
+              }
+            }}
+          >
+            {githubSyncStatus.state === 'syncing'
+              ? '☁️ Đang lưu GitHub...'
+              : githubSyncStatus.state === 'synced'
+                ? `☁️ Đã lưu GitHub${
+                    githubSyncStatus.lastSyncedAt
+                      ? ` (${String(new Date(githubSyncStatus.lastSyncedAt).getHours()).padStart(2, '0')}:${String(new Date(githubSyncStatus.lastSyncedAt).getMinutes()).padStart(2, '0')})`
+                      : ''
+                  }`
+                : githubSyncStatus.state === 'error'
+                  ? '⚠️ Lỗi đồng bộ GitHub'
+                  : '☁️ Chưa bật GitHub Cloud'}
+          </button>
         </div>
         <span>
           {symbol} · Khung {timeframe} · {bars.length} nến
@@ -667,6 +752,7 @@ export function App() {
               clearUndoToast();
               await restoreTrade(targetId);
               setTrades(await db.trades.toArray());
+              schedulePushToGitHub();
             }}
           >
             Hoàn tác

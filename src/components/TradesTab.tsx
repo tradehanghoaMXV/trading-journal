@@ -9,6 +9,7 @@ import {
   Pencil,
   PenLine,
   Plus,
+  RotateCcw,
   Trash2,
   X,
 } from 'lucide-preact';
@@ -42,12 +43,15 @@ interface TradesTabProps {
   replayActive: boolean;
   strategies: Strategy[];
   trades: Trade[];
+  deletedTrades: Trade[];
   seed: TradeFormSeed | null;
   selectedTradeId: string | null;
   onSelectTrade: (id: string | null) => void;
   onJumpToMarket: (symbol: string, timeframe: string) => Promise<void> | void;
   onSaveTrade: (trade: Trade) => Promise<void>;
   onDeleteTrade: (id: string) => Promise<void>;
+  onRestoreTrade: (id: string) => Promise<void>;
+  onPermanentDeleteTrade: (id: string) => Promise<void>;
   onClearSeed: () => void;
   onCaptureChart: () => Promise<string>;
   onGetDrawings: () => unknown;
@@ -193,6 +197,8 @@ export function TradesTab(props: TradesTabProps) {
   const [modalChecklist, setModalChecklist] = useState<boolean[]>([]);
   const [modalMistakes, setModalMistakes] = useState<string[]>([]);
   const [savingModalNotes, setSavingModalNotes] = useState<boolean>(false);
+  const [confirmDeleteId, setConfirmDeleteId] = useState<string | null>(null);
+  const [trashOpen, setTrashOpen] = useState<boolean>(false);
 
   const activeStrat =
     props.strategies.find((s) => s.id === strategyId) ?? props.strategies[0];
@@ -453,6 +459,35 @@ export function TradesTab(props: TradesTabProps) {
       setAfterCapturedAt(updated.afterCapturedAt);
     }
     openViewer(updated, 'both', true);
+  };
+
+  const handleRemoveTradeImage = async (
+    t: Trade,
+    which: 'before' | 'after',
+    isSaved: boolean
+  ) => {
+    const updated: Trade =
+      which === 'before'
+        ? { ...t, beforeImage: undefined, beforeCapturedAt: undefined }
+        : { ...t, afterImage: undefined, afterCapturedAt: undefined };
+
+    if (isSaved) {
+      await props.onSaveTrade(updated);
+    }
+
+    if (!isSaved || editingId === t.id) {
+      if (which === 'before') {
+        setBeforeImage(undefined);
+        setBeforeCapturedAt(undefined);
+      } else {
+        setAfterImage(undefined);
+        setAfterCapturedAt(undefined);
+      }
+    }
+
+    if (viewerTrade && viewerTrade.id === t.id) {
+      setViewerTrade(updated);
+    }
   };
 
   const handleSubmit = async (e: Event) => {
@@ -1461,17 +1496,66 @@ export function TradesTab(props: TradesTabProps) {
                             >
                               <Pencil size={11} color="#38bdf8" />
                             </button>
-                            <button
-                              type="button"
-                              class="btn"
-                              style={{ padding: '2px 4px' }}
-                              onClick={(ev) => {
-                                ev.stopPropagation();
-                                props.onDeleteTrade(t.id);
-                              }}
-                            >
-                              <Trash2 size={11} color="#FF3B5C" />
-                            </button>
+                            {confirmDeleteId === t.id ? (
+                              <div
+                                data-testid={`confirm-delete-${t.id}`}
+                                onClick={(ev) => ev.stopPropagation()}
+                                style={{
+                                  display: 'inline-flex',
+                                  alignItems: 'center',
+                                  gap: '3px',
+                                  padding: '1px 4px',
+                                  borderRadius: '5px',
+                                  background: 'rgba(255, 59, 92, 0.12)',
+                                  border: '1px solid rgba(255, 59, 92, 0.45)',
+                                }}
+                              >
+                                <span style={{ fontSize: '10px', color: '#fca5a5', fontWeight: 600 }}>
+                                  Xóa lệnh?
+                                </span>
+                                <button
+                                  type="button"
+                                  class="btn btn-bear"
+                                  data-testid={`confirm-delete-yes-${t.id}`}
+                                  style={{ padding: '1px 5px', fontSize: '10px' }}
+                                  onClick={(ev) => {
+                                    ev.stopPropagation();
+                                    setConfirmDeleteId(null);
+                                    if (editingId === t.id) resetForm();
+                                    if (viewerTrade?.id === t.id) setViewerTrade(null);
+                                    void props.onDeleteTrade(t.id);
+                                  }}
+                                >
+                                  Xóa
+                                </button>
+                                <button
+                                  type="button"
+                                  class="btn"
+                                  data-testid={`confirm-delete-cancel-${t.id}`}
+                                  style={{ padding: '1px 5px', fontSize: '10px' }}
+                                  onClick={(ev) => {
+                                    ev.stopPropagation();
+                                    setConfirmDeleteId(null);
+                                  }}
+                                >
+                                  Hủy
+                                </button>
+                              </div>
+                            ) : (
+                              <button
+                                type="button"
+                                class="btn"
+                                data-testid={`delete-trade-${t.id}`}
+                                title="Xóa lệnh"
+                                style={{ padding: '2px 4px' }}
+                                onClick={(ev) => {
+                                  ev.stopPropagation();
+                                  setConfirmDeleteId(t.id);
+                                }}
+                              >
+                                <Trash2 size={11} color="#FF3B5C" />
+                              </button>
+                            )}
                           </div>
                         </div>
 
@@ -1501,6 +1585,7 @@ export function TradesTab(props: TradesTabProps) {
                         {showBeforeAfterGrid && (
                           <div class="grid-2" style={{ gap: '5px' }}>
                             <div
+                              class="thumb-wrap"
                               data-testid={`thumb-before-${t.id}`}
                               title="Bấm để xem ảnh Trước + Ghi chú Trước"
                               onClick={(ev) => {
@@ -1516,6 +1601,21 @@ export function TradesTab(props: TradesTabProps) {
                                 flexDirection: 'column',
                               }}
                             >
+                              {t.beforeImage && (
+                                <button
+                                  type="button"
+                                  class="thumb-delete-btn"
+                                  data-testid={`delete-before-img-${t.id}`}
+                                  title="Xóa riêng ảnh Trước"
+                                  aria-label="Xóa riêng ảnh Trước"
+                                  onClick={(ev) => {
+                                    ev.stopPropagation();
+                                    void handleRemoveTradeImage(t, 'before', true);
+                                  }}
+                                >
+                                  <X size={10} />
+                                </button>
+                              )}
                               <div
                                 style={{
                                   fontSize: '9.5px',
@@ -1573,6 +1673,7 @@ export function TradesTab(props: TradesTabProps) {
                             </div>
 
                             <div
+                              class="thumb-wrap"
                               data-testid={`thumb-after-${t.id}`}
                               title="Bấm để xem ảnh Sau + Ghi chú Sau"
                               onClick={(ev) => {
@@ -1588,6 +1689,21 @@ export function TradesTab(props: TradesTabProps) {
                                 flexDirection: 'column',
                               }}
                             >
+                              {t.afterImage && (
+                                <button
+                                  type="button"
+                                  class="thumb-delete-btn"
+                                  data-testid={`delete-after-img-${t.id}`}
+                                  title="Xóa riêng ảnh Sau"
+                                  aria-label="Xóa riêng ảnh Sau"
+                                  onClick={(ev) => {
+                                    ev.stopPropagation();
+                                    void handleRemoveTradeImage(t, 'after', true);
+                                  }}
+                                >
+                                  <X size={10} />
+                                </button>
+                              )}
                               <div
                                 style={{
                                   fontSize: '9.5px',
@@ -1696,6 +1812,76 @@ export function TradesTab(props: TradesTabProps) {
                   })}
                 </div>
               ))}
+            </div>
+          )}
+
+          {props.deletedTrades.length > 0 && (
+            <div class="trash-section" data-testid="trash-section">
+              <button
+                type="button"
+                class="trash-toggle-btn"
+                data-testid="trash-toggle-btn"
+                onClick={() => setTrashOpen((v) => !v)}
+              >
+                <span>🗑 Thùng rác ({props.deletedTrades.length})</span>
+                {trashOpen ? <ChevronDown size={13} /> : <ChevronRight size={13} />}
+              </button>
+              {trashOpen && (
+                <div
+                  data-testid="trash-list"
+                  style={{ display: 'flex', flexDirection: 'column', gap: '5px', marginTop: '6px' }}
+                >
+                  {props.deletedTrades.map((dt) => (
+                    <div
+                      key={dt.id}
+                      data-testid={`trash-item-${dt.id}`}
+                      style={{
+                        padding: '6px 8px',
+                        borderRadius: '6px',
+                        background: '#0b0f17',
+                        border: '1px dashed #334155',
+                        display: 'flex',
+                        alignItems: 'center',
+                        justifyContent: 'space-between',
+                        gap: '6px',
+                      }}
+                    >
+                      <div style={{ display: 'flex', flexDirection: 'column', gap: '2px', minWidth: 0 }}>
+                        <div style={{ display: 'flex', alignItems: 'center', gap: '5px' }}>
+                          <span class={`pill ${dt.side === 'long' ? 'pill-bull' : 'pill-bear'}`}>
+                            {dt.side.toUpperCase()}
+                          </span>
+                          <strong style={{ fontSize: '11.5px' }}>{dt.symbol}</strong>
+                          <span style={{ color: '#94a3b8', fontSize: '10px' }}>{dt.timeframe}</span>
+                        </div>
+                        <span style={{ fontSize: '10px', color: '#64748b' }}>
+                          {formatExactTimestamp(dt.entryTime || dt.createdAt)}
+                        </span>
+                      </div>
+                      <div style={{ display: 'flex', alignItems: 'center', gap: '4px', flexShrink: 0 }}>
+                        <button
+                          type="button"
+                          class="btn btn-bull"
+                          data-testid={`restore-trade-${dt.id}`}
+                          style={{ padding: '2px 7px', fontSize: '10px' }}
+                          onClick={() => void props.onRestoreTrade(dt.id)}
+                        >
+                          <RotateCcw size={10} /> Khôi phục
+                        </button>
+                        <button
+                          type="button"
+                          class="btn btn-bear"
+                          data-testid={`perm-delete-trade-${dt.id}`}
+                          style={{ padding: '2px 7px', fontSize: '10px' }}
+                          onClick={() => void props.onPermanentDeleteTrade(dt.id)}
+                        >
+                          Xóa vĩnh viễn
+                        </button>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              )}
             </div>
           )}
         </div>
@@ -2038,12 +2224,30 @@ export function TradesTab(props: TradesTabProps) {
                         color: '#38bdf8',
                         display: 'flex',
                         justifyContent: 'space-between',
+                        alignItems: 'center',
+                        gap: '8px',
                       }}
                     >
                       <span>TRƯỚC KHI VÀO / LÚC GHI LỆNH</span>
-                      <span style={{ color: '#94a3b8', fontWeight: 400 }}>
-                        {formatShortTime(viewerTrade.beforeCapturedAt)}
-                      </span>
+                      <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                        <span style={{ color: '#94a3b8', fontWeight: 400 }}>
+                          {formatShortTime(viewerTrade.beforeCapturedAt)}
+                        </span>
+                        {viewerTrade.beforeImage && (
+                          <button
+                            type="button"
+                            class="btn btn-bear"
+                            data-testid="modal-delete-before-img"
+                            title="Xóa riêng ảnh Trước"
+                            style={{ padding: '2px 7px', fontSize: '10.5px' }}
+                            onClick={() =>
+                              void handleRemoveTradeImage(viewerTrade, 'before', viewerIsSaved)
+                            }
+                          >
+                            <Trash2 size={11} /> Xóa ảnh này
+                          </button>
+                        )}
+                      </div>
                     </div>
                     {viewerTrade.beforeImage ? (
                       <img
@@ -2134,12 +2338,30 @@ export function TradesTab(props: TradesTabProps) {
                         color: '#00F59B',
                         display: 'flex',
                         justifyContent: 'space-between',
+                        alignItems: 'center',
+                        gap: '8px',
                       }}
                     >
                       <span>SAU KHI DIỄN BIẾN / ĐÓNG LỆNH</span>
-                      <span style={{ color: '#94a3b8', fontWeight: 400 }}>
-                        {formatShortTime(viewerTrade.afterCapturedAt)}
-                      </span>
+                      <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                        <span style={{ color: '#94a3b8', fontWeight: 400 }}>
+                          {formatShortTime(viewerTrade.afterCapturedAt)}
+                        </span>
+                        {viewerTrade.afterImage && (
+                          <button
+                            type="button"
+                            class="btn btn-bear"
+                            data-testid="modal-delete-after-img"
+                            title="Xóa riêng ảnh Sau"
+                            style={{ padding: '2px 7px', fontSize: '10.5px' }}
+                            onClick={() =>
+                              void handleRemoveTradeImage(viewerTrade, 'after', viewerIsSaved)
+                            }
+                          >
+                            <Trash2 size={11} /> Xóa ảnh này
+                          </button>
+                        )}
+                      </div>
                     </div>
                     {viewerTrade.afterImage ? (
                       <img

@@ -5,6 +5,9 @@ import {
   computeRMultiple,
   db,
   ensureDefaultStrategies,
+  permanentlyDeleteTrade,
+  restoreTrade,
+  softDeleteTrade,
   type ChartNote,
   type Strategy,
   type Trade,
@@ -66,6 +69,38 @@ export function App() {
   const [noteSeed, setNoteSeed] = useState<NoteFormSeed | null>(null);
   const [fxStatus, setFxStatus] = useState<FxDataSourceStatus>({ mode: 'fallback' });
   const [mt5Hint, setMt5Hint] = useState(false);
+  const [undoToast, setUndoToast] = useState<{ tradeId: string } | null>(null);
+  const undoTimerRef = useRef<number | null>(null);
+
+  const clearUndoToast = useCallback(() => {
+    if (undoTimerRef.current !== null) {
+      window.clearTimeout(undoTimerRef.current);
+      undoTimerRef.current = null;
+    }
+    setUndoToast(null);
+  }, []);
+
+  const showUndoToast = useCallback(
+    (tradeId: string) => {
+      if (undoTimerRef.current !== null) {
+        window.clearTimeout(undoTimerRef.current);
+      }
+      setUndoToast({ tradeId });
+      undoTimerRef.current = window.setTimeout(() => {
+        undoTimerRef.current = null;
+        setUndoToast(null);
+      }, 10_000);
+    },
+    []
+  );
+
+  useEffect(() => {
+    return () => {
+      if (undoTimerRef.current !== null) {
+        window.clearTimeout(undoTimerRef.current);
+      }
+    };
+  }, []);
 
   const toolRef = useRef<ActiveTool>(activeTool);
   toolRef.current = activeTool;
@@ -102,7 +137,7 @@ export function App() {
     const openReplay = await db.trades
       .where('symbol')
       .equals(barSym)
-      .filter((t) => t.mode === 'replay' && t.status === 'open')
+      .filter((t) => !t.deletedAt && t.mode === 'replay' && t.status === 'open')
       .toArray();
 
     let changed = false;
@@ -224,11 +259,16 @@ export function App() {
     };
   }, [handleBarUpdate]);
 
+  const activeTrades = trades.filter((t) => !t.deletedAt);
+  const deletedTrades = trades
+    .filter((t) => Boolean(t.deletedAt))
+    .sort((a, b) => (b.deletedAt ?? 0) - (a.deletedAt ?? 0));
+
   // Push overlay data whenever trades, notes, draft, or symbol changes
   useEffect(() => {
     hostRef.current?.pushOverlayData({
       symbol,
-      trades,
+      trades: activeTrades,
       notes,
       draft,
       selectedTradeId,
@@ -438,7 +478,8 @@ export function App() {
                   lastPrice={lastPrice}
                   replayActive={replay.active}
                   strategies={strategies}
-                  trades={trades}
+                  trades={activeTrades}
+                  deletedTrades={deletedTrades}
                   seed={tradeSeed}
                   selectedTradeId={selectedTradeId}
                   onSelectTrade={setSelectedTradeId}
@@ -454,8 +495,26 @@ export function App() {
                     setTrades(await db.trades.toArray());
                   }}
                   onDeleteTrade={async (id) => {
-                    await db.trades.delete(id);
+                    await softDeleteTrade(id);
                     setTrades(await db.trades.toArray());
+                    if (selectedTradeId === id) {
+                      setSelectedTradeId(null);
+                    }
+                    showUndoToast(id);
+                  }}
+                  onRestoreTrade={async (id) => {
+                    await restoreTrade(id);
+                    setTrades(await db.trades.toArray());
+                    if (undoToast?.tradeId === id) {
+                      clearUndoToast();
+                    }
+                  }}
+                  onPermanentDeleteTrade={async (id) => {
+                    await permanentlyDeleteTrade(id);
+                    setTrades(await db.trades.toArray());
+                    if (undoToast?.tradeId === id) {
+                      clearUndoToast();
+                    }
                   }}
                   onClearSeed={() => setTradeSeed(null)}
                   onCaptureChart={async () => {
@@ -486,7 +545,7 @@ export function App() {
               )}
 
               {activeTab === 'consistency' && (
-                <ConsistencyTab strategies={strategies} trades={trades} />
+                <ConsistencyTab strategies={strategies} trades={activeTrades} />
               )}
 
               {activeTab === 'strategies' && (
@@ -518,7 +577,7 @@ export function App() {
 
               {activeTab === 'data' && (
                 <DataTab
-                  tradeCount={trades.length}
+                  tradeCount={activeTrades.length}
                   noteCount={notes.length}
                   strategyCount={strategies.length}
                   fxStatus={fxStatus}
@@ -594,6 +653,40 @@ export function App() {
           {symbol} · Khung {timeframe} · {bars.length} nến
         </span>
       </footer>
+
+      {undoToast && (
+        <div class="undo-toast" data-testid="undo-toast" role="status">
+          <span>Đã chuyển lệnh vào thùng rác</span>
+          <span>·</span>
+          <button
+            type="button"
+            class="undo-toast-btn"
+            data-testid="undo-toast-btn"
+            onClick={async () => {
+              const targetId = undoToast.tradeId;
+              clearUndoToast();
+              await restoreTrade(targetId);
+              setTrades(await db.trades.toArray());
+            }}
+          >
+            Hoàn tác
+          </button>
+          <button
+            type="button"
+            class="btn"
+            title="Đóng thông báo"
+            style={{
+              padding: '2px 4px',
+              border: 'none',
+              background: 'transparent',
+              color: '#94a3b8',
+            }}
+            onClick={clearUndoToast}
+          >
+            <X size={13} />
+          </button>
+        </div>
+      )}
     </div>
   );
 }

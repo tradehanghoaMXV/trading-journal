@@ -48,6 +48,7 @@ export interface Trade {
   beforeCapturedAt?: number;
   afterCapturedAt?: number;
   drawingsSnapshot?: unknown;
+  deletedAt?: number;
 }
 
 export function getTradeBeforeNotes(t: Pick<Trade, 'beforeNotes' | 'notes'>): string {
@@ -194,6 +195,27 @@ export async function ensureDefaultStrategies(): Promise<void> {
   if (count === 0) {
     await db.strategies.bulkPut(DEFAULT_STRATEGIES);
   }
+}
+
+export async function softDeleteTrade(id: string): Promise<Trade | undefined> {
+  const existing = await db.trades.get(id);
+  if (!existing) return undefined;
+  const updated: Trade = { ...existing, deletedAt: Date.now() };
+  await db.trades.put(updated);
+  return updated;
+}
+
+export async function restoreTrade(id: string): Promise<Trade | undefined> {
+  const existing = await db.trades.get(id);
+  if (!existing) return undefined;
+  const { deletedAt: _deletedAt, ...rest } = existing;
+  const updated: Trade = rest;
+  await db.trades.put(updated);
+  return updated;
+}
+
+export async function permanentlyDeleteTrade(id: string): Promise<void> {
+  await db.trades.delete(id);
 }
 
 export interface JournalExportPayload {
